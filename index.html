@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AnimeWatch - Media Ranking</title>
+    <!-- Vue 3 CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body id="app" v-cloak>
+
+    <header>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <button class="menu-btn" @click="toggleSidebar">☰</button>
+            <div class="logo">AniList</div>
+        </div>
+
+        <div class="search-container">
+            <input type="text" v-model="searchQuery" placeholder="Search anime or genre...">
+        </div>
+
+        <div class="user-actions">
+            <button class="theme-toggle" @click="toggleTheme"
+                :title="isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'">
+                <svg v-if="isDarkMode" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"
+                    fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="5" />
+                    <line x1="12" y1="1" x2="12" y2="3" />
+                    <line x1="12" y1="21" x2="12" y2="23" />
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                    <line x1="1" y1="12" x2="3" y2="12" />
+                    <line x1="21" y1="12" x2="23" y2="12" />
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                </svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+                    stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
+            <span>My List</span>
+            <div style="width: 32px; height: 32px; background: #555; border-radius: 50%;"></div>
+        </div>
+    </header>
+
+    <div class="overlay" :class="{ active: isSidebarOpen }" @click="toggleSidebar"></div>
+
+    <div class="container">
+
+        <aside :class="{ active: isSidebarOpen }">
+            <div class="sidebar-header">
+                <h3>Filters</h3>
+                <button class="close-btn" @click="toggleSidebar">×</button>
+            </div>
+
+            <div class="filter-group">
+                <h3>Order By</h3>
+                <select v-model="orderBy" class="sort-select">
+                    <option value="m.created_at DESC">Newest Added</option>
+                    <option value="m.created_at ASC">Oldest Added</option>
+                    <option value="m.title ASC">Title (A-Z)</option>
+                    <option value="m.title DESC">Title (Z-A)</option>
+                    <option value="m.score DESC">My Rating (High-Low)</option>
+                    <option value="m.score_mal DESC">MAL Rating (High-Low)</option>
+                    <option value="m.year DESC">Year (Newest)</option>
+                    <option value="m.year ASC">Year (Oldest)</option>
+                </select>
+            </div>
+
+            <div class="filter-group">
+                <h3>Ratings</h3>
+                <div class="checkbox-group">
+                    <label v-for="rat in ratings" :key="rat.id" class="checkbox-item">
+                        <input type="checkbox" :value="rat.id" v-model="selectedRatings">
+                        {{ rat.label }}
+                    </label>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h3>Categories</h3>
+                <div class="checkbox-group">
+                    <label v-for="cat in categories" :key="cat.id" class="checkbox-item">
+                        <input type="checkbox" :value="cat.id" v-model="selectedGenres">
+                        {{ cat.name }}
+                    </label>
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h3>Status</h3>
+                <div class="checkbox-group">
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="Watched" v-model="selectedStatuses">
+                        Watched
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="Plan to Watch" v-model="selectedStatuses">
+                        Plan to Watch
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="null" v-model="selectedStatuses">
+                        Not in List
+                    </label>
+                </div>
+            </div>
+
+            <button class="btn-add" @click="openMediaModal()"
+                style="margin-top: 20px; background: var(--primary); color: white;">+ Add
+                New Media</button>
+            <button class="btn-add" @click="fetchRandomMedia"
+                style="margin-top: 10px; background: var(--secondary); color: white;">Show 20 Random</button>
+            <button class="btn-add" @click="resetFilters" style="margin-top: auto;">Reset Filters</button>
+        </aside>
+
+        <main>
+            <div class="page-header">
+                <h2>{{ searchActive ? 'Search Results' : 'My Watchlist' }}</h2>
+                <div v-if="loading" class="spinner" style="width: 20px; height: 20px;"></div>
+            </div>
+
+            <div v-if="loading && items.length === 0" class="loading-container">
+                <div class="spinner"></div>
+            </div>
+
+            <div v-else class="anime-grid">
+                <div v-for="item in items" :key="item.id" class="card" @click="toggleWatchStatus(item)">
+                    <div class="tag-status"
+                        :class="item.status ? (item.status === 'Watched' ? 'watched' : 'plan') : 'none'">
+                        {{ item.status ? item.status : '+ Add' }}
+                    </div>
+                    <div class="card-image-wrapper">
+                        <div class="tag-rating" v-if="item.ratings">
+                            <span v-for="rat in (item.ratings || '').split(',')" :key="rat">
+                                {{ rat.trim() }}
+                            </span>
+                        </div>
+                        <img :src="item.image ? 'medias/' + item.image : 'https://placehold.co/400x600/333/FFF?text=No+Image'"
+                            :alt="item.title" class="card-image">
+                    </div>
+                    <div class="card-content">
+                        <div>
+                            <div class="card-title" :title="item.title">{{ item.title }}</div>
+                            <div class="card-meta">
+                                <div class="score-container" style="align-items: center; flex-wrap: wrap;">
+                                    <div class="tag-list" v-if="item.categories"
+                                        style="margin-top: 0; display: inline-flex;">
+                                        <span class="tag" v-for="cat in (item.categories || '').split(',')" :key="cat">
+                                            {{ cat.trim() }}
+                                        </span>
+                                    </div>
+                                    <span class="year-label">{{ item.year }}</span>
+                                    <div class="rating mal" title="MAL Score">MAL: {{ item.score_mal }} ★</div>
+                                </div>
+                                <div class="score-container">
+                                    <div class="score-range-group">
+                                        <div class="score-header">
+                                            <span>My Rating:</span>
+                                            <span class="score-value">{{ item.score }} ★</span>
+                                        </div>
+                                        <input type="range" step="0.1" min="0" max="10" class="score-slider"
+                                            v-model.number="item.score" @click.stop @change="updateScore(item)">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="card-actions" style="margin-top: 10px;">
+                                <button class="btn-info" @click.stop="openInfoModal(item)">Infos</button>
+                                <button class="btn-edit" @click.stop="openMediaModal(item)">Edit</button>
+                                <button class="btn-delete" @click.stop="deleteMedia(item.id)">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pagination -->
+            <div v-if="totalPages > 1" class="pagination">
+                <button class="page-link" :disabled="currentPage === 1" @click="changePage(currentPage - 1)">
+                    &laquo; Previous
+                </button>
+
+                <div class="page-numbers">
+                    <button v-for="page in totalPages" :key="page" class="page-link"
+                        :class="{ active: page === currentPage }" @click="changePage(page)"
+                        v-show="page === 1 || page === totalPages || Math.abs(page - currentPage) <= 2">
+                        {{ page }}
+                    </button>
+                    <span v-if="totalPages > 7" class="page-ellipsis">...</span>
+                </div>
+
+                <button class="page-link" :disabled="currentPage === totalPages" @click="changePage(currentPage + 1)">
+                    Next &raquo;
+                </button>
+            </div>
+
+            <div v-if="!loading && items.length === 0"
+                style="text-align: center; padding: 3rem; color: var(--text-muted);">
+                <p>No results found for your filters/search.</p>
+            </div>
+        </main>
+
+        <!-- Media Modal (Add/Edit) -->
+        <div v-if="showMediaModal" class="modal-overlay" @click.self="closeMediaModal">
+            <div class="modal-content media-modal">
+                <div class="modal-header">
+                    <h3>{{ mediaForm.id ? 'Edit Media' : 'Add New Media' }}</h3>
+                    <button class="close-btn" @click="closeMediaModal">×</button>
+                </div>
+                <div class="modal-body">
+                    <form @submit.prevent="saveMedia" class="media-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Title*</label>
+                                <input type="text" v-model="mediaForm.title" required placeholder="Anime Title">
+                            </div>
+                            <div class="form-group">
+                                <label>Year</label>
+                                <input type="text" v-model="mediaForm.year" placeholder="2023-Q1">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Media Image</label>
+                            <input type="file" @change="handleFileUpload" accept="image/*" class="file-input">
+                            <div v-if="imagePreview" class="image-preview" style="margin-top: 10px;">
+                                <img :src="imagePreview" style="max-width: 150px; border-radius: 8px;">
+                            </div>
+                            <input type="hidden" v-model="mediaForm.image">
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Status</label>
+                                <select v-model="mediaForm.status">
+                                    <option :value="null">None (Not in List)</option>
+                                    <option value="Plan to Watch">Plan to Watch</option>
+                                    <option value="Watched">Watched</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>My Score (0-10)</label>
+                                <input type="number" v-model.number="mediaForm.score" step="0.1" min="0" max="10">
+                            </div>
+                            <div class="form-group">
+                                <label>MAL Score (0-10)</label>
+                                <input type="number" v-model.number="mediaForm.score_mal" step="0.1" min="0" max="10">
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Category</label>
+                            <div class="checkbox-grid">
+                                <label v-for="cat in categories" :key="cat.id" class="checkbox-item">
+                                    <input type="radio" :value="cat.id" v-model="mediaForm.category_id"
+                                        name="media_category">
+                                    {{ cat.name }}
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Rating (Age/Content)</label>
+                            <div class="checkbox-grid">
+                                <label v-for="rat in ratings" :key="rat.id" class="checkbox-item">
+                                    <input type="radio" :value="rat.id" v-model="mediaForm.rating_id"
+                                        name="media_rating">
+                                    {{ rat.name }}
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Infos / Notes</label>
+                            <textarea v-model="mediaForm.infos" rows="4" placeholder="Description, notes..."></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-cancel" @click="closeMediaModal">Cancel</button>
+                    <button class="btn-save" @click="saveMedia" :disabled="isSavingMedia">
+                        {{ isSavingMedia ? 'Saving...' : (mediaForm.id ? 'Update Media' : 'Create Media') }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Info Modal -->
+        <div v-if="showInfoModal" class="modal-overlay" @click.self="closeInfoModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Infos: {{ selectedMedia?.title }}</h3>
+                    <button class="close-btn" @click="closeInfoModal">×</button>
+                </div>
+                <div class="modal-body">
+                    <textarea v-model="selectedMedia.infos" placeholder="Enter anime details, notes, etc..."
+                        rows="10"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-cancel" @click="closeInfoModal">Cancel</button>
+                    <button class="btn-save" @click="saveInfos" :disabled="isSavingInfo">
+                        {{ isSavingInfo ? 'Saving...' : 'Save Changes' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,24 @@
+# Credentials & sensitive config
+config.php
+.htpasswd
+
+# Uploaded media files
+medias/
+
+# Large data/import files
+*.ndjson
+*.json
+
+# Claude Code
+.claude/
+
+# OS & editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# PHP
+vendor/
+*.log
