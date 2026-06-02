@@ -2,89 +2,87 @@ const { createApp, ref, onMounted, computed, watch } = Vue;
 
 createApp({
     setup() {
-        const items = ref([]);
-        const categories = ref([]);
-        const searchQuery = ref('');
-        const selectedGenres = ref([]);
+
+        // ─── State ───────────────────────────────────────────────────────────
+
+        const items          = ref([]);
+        const categories     = ref([]);
+        const ratings        = ref([]);
+        const searchQuery    = ref('');
+        const selectedGenres   = ref([]);
         const selectedStatuses = ref([]);
-        const selectedRatings = ref([]);
-        const loading = ref(false);
-        const isSidebarOpen = ref(false);
-        const orderBy = ref('m.created_at DESC');
-        const searchActive = computed(() => {
-            return searchQuery.value.trim() !== '' ||
-                selectedGenres.value.length > 0 ||
-                selectedRatings.value.length > 0 ||
-                selectedStatuses.value.length > 0;
-        });
-        const isDarkMode = ref(localStorage.getItem('theme') === 'dark');
-        const ratings = ref([]);
-        const showInfoModal = ref(false);
+        const selectedRatings  = ref([]);
+        const orderBy        = ref('m.created_at DESC');
+        const loading        = ref(false);
+        const isSidebarOpen  = ref(false);
+        const isDarkMode     = ref(localStorage.getItem('theme') === 'dark');
+
+        const currentPage  = ref(1);
+        const pageSize     = ref(20);
+        const totalItems   = ref(0);
+        const totalPages   = ref(0);
+
+        // Info modal
+        const showInfoModal  = ref(false);
+        const selectedMedia  = ref(null);
+        const isSavingInfo   = ref(false);
+
+        // Add/Edit modal
         const showMediaModal = ref(false);
-        const selectedMedia = ref(null);
-        const isSavingInfo = ref(false);
-        const isSavingMedia = ref(false);
-        const selectedFile = ref(null);
-        const imagePreview = ref(null);
+        const isSavingMedia  = ref(false);
+        const selectedFile   = ref(null);
+        const imagePreview   = ref(null);
 
         const mediaForm = ref({
-            id: null,
-            title: '',
-            image: '',
-            year: String(new Date().getFullYear()),
-            score: 0,
-            score_mal: 0,
-            status: null,
-            infos: '',
+            id:          null,
+            title:       '',
+            image:       '',
+            year:        String(new Date().getFullYear()),
+            score:       0,
+            score_mal:   0,
+            status:      null,
+            infos:       '',
             category_id: null,
-            rating_id: null
+            rating_id:   null,
         });
 
-        const currentPage = ref(1);
-        const pageSize = ref(20);
-        const totalItems = ref(0);
-        const totalPages = ref(0);
+        const searchActive = computed(() =>
+            searchQuery.value.trim() !== ''  ||
+            selectedGenres.value.length > 0  ||
+            selectedRatings.value.length > 0 ||
+            selectedStatuses.value.length > 0
+        );
 
         let debounceTimer = null;
 
+        // ─── Media list ──────────────────────────────────────────────────────
+
         const fetchMedia = async (page = 1) => {
-            // Ensure page is a number (handles event objects from @change)
-            const pageNum = typeof page === 'number' ? page : 1;
-            loading.value = true;
-            currentPage.value = pageNum;
+            loading.value    = true;
+            currentPage.value = typeof page === 'number' ? page : 1;
+
             try {
-                let params = new URLSearchParams();
-                params.append('page', currentPage.value);
-                params.append('limit', pageSize.value);
-                params.append('order_by', orderBy.value);
+                const params = new URLSearchParams({
+                    page:     currentPage.value,
+                    limit:    pageSize.value,
+                    order_by: orderBy.value,
+                });
 
-                if (searchQuery.value) {
-                    params.append('keyword', searchQuery.value);
-                }
+                if (searchQuery.value)              params.append('keyword',      searchQuery.value);
+                if (selectedRatings.value.length)   params.append('rating_ids',   selectedRatings.value.join(','));
+                if (selectedGenres.value.length)    params.append('category_ids', selectedGenres.value.join(','));
+                if (selectedStatuses.value.length)  params.append('statuses',     selectedStatuses.value.join(','));
 
-                if (selectedRatings.value.length > 0) {
-                    params.append('rating_ids', selectedRatings.value.join(','));
-                }
+                const response = await fetch('api.php?' + params.toString());
+                const result   = await response.json();
 
-                if (selectedGenres.value.length > 0) {
-                    params.append('category_ids', selectedGenres.value.join(','));
-                }
-
-                if (selectedStatuses.value.length > 0) {
-                    params.append('statuses', selectedStatuses.value.join(','));
-                }
-
-                const url = 'api.php' + (params.toString() ? '?' + params.toString() : '');
-                const response = await fetch(url);
-                const result = await response.json();
                 if (result.status === 'success') {
                     items.value = result.data;
                     if (result.pagination) {
-                        totalItems.value = result.pagination.total;
-                        totalPages.value = result.pagination.pages;
+                        totalItems.value  = result.pagination.total;
+                        totalPages.value  = result.pagination.pages;
                         currentPage.value = result.pagination.page;
                     } else {
-                        // For random or other actions that might not return pagination
                         totalItems.value = items.value.length;
                         totalPages.value = 1;
                     }
@@ -106,13 +104,16 @@ createApp({
             loading.value = true;
             try {
                 const response = await fetch('api.php?action=random&limit=20');
-                const result = await response.json();
+                const result   = await response.json();
                 if (result.status === 'success') {
-                    items.value = result.data;
-                    // Optional: clear filters to avoid confusion
-                    selectedGenres.value = [];
+                    items.value      = result.data;
+                    totalItems.value = result.data.length;
+                    totalPages.value = 1;
+                    currentPage.value = 1;
+                    // Clear filters so the random selection isn't confusing
+                    selectedGenres.value   = [];
                     selectedStatuses.value = [];
-                    searchQuery.value = '';
+                    searchQuery.value      = '';
                 }
             } catch (error) {
                 console.error('Error fetching random media:', error);
@@ -121,25 +122,61 @@ createApp({
             }
         };
 
-        const toggleWatchStatus = async (item) => {
-            let newStatus;
-            if (!item.status) {
-                newStatus = 'Plan to Watch';
-            } else if (item.status === 'Plan to Watch') {
-                newStatus = 'Watched';
-            } else {
-                newStatus = null;
+        // ─── Filters & search ────────────────────────────────────────────────
+
+        const fetchFilters = async () => {
+            try {
+                const [catRes, ratRes] = await Promise.all([
+                    fetch('api.php?action=categories'),
+                    fetch('api.php?action=ratings'),
+                ]);
+                const catData = await catRes.json();
+                const ratData = await ratRes.json();
+                if (catData.status === 'success') categories.value = catData.data;
+                if (ratData.status === 'success') ratings.value    = ratData.data;
+            } catch (error) {
+                console.error('Error fetching filters:', error);
             }
+        };
+
+        const resetFilters = () => {
+            clearTimeout(debounceTimer); // Prevent stale debounced fetch after reset
+            selectedGenres.value   = [];
+            selectedStatuses.value = [];
+            selectedRatings.value  = [];
+            searchQuery.value      = '';
+            fetchMedia(1);
+        };
+
+        // Watchers automatically re-fetch when filter or sort selections change.
+        // The deep flag handles array mutations as well as full replacement.
+        watch([selectedRatings, selectedGenres, selectedStatuses, orderBy], () => {
+            fetchMedia(1);
+        }, { deep: true });
+
+        watch(searchQuery, () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => fetchMedia(1), 500);
+        });
+
+        // ─── Status / score quick-updates ────────────────────────────────────
+
+        const toggleWatchStatus = async (item) => {
+            const next = !item.status
+                ? 'Plan to Watch'
+                : item.status === 'Plan to Watch'
+                    ? 'Watched'
+                    : null;
 
             try {
                 const response = await fetch(`api.php?action=update_status&id=${item.id}`, {
-                    method: 'POST',
+                    method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ status: newStatus })
+                    body:    JSON.stringify({ status: next }),
                 });
                 const result = await response.json();
                 if (result.status === 'success') {
-                    item.status = newStatus; // Optimistic update
+                    item.status = next; // Optimistic local update
                 }
             } catch (error) {
                 console.error('Error updating status:', error);
@@ -149,9 +186,9 @@ createApp({
         const updateScore = async (item) => {
             try {
                 const response = await fetch(`api.php?action=update_score&id=${item.id}`, {
-                    method: 'POST',
+                    method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ score: item.score })
+                    body:    JSON.stringify({ score: item.score }),
                 });
                 const result = await response.json();
                 if (result.status !== 'success') {
@@ -162,158 +199,96 @@ createApp({
             }
         };
 
-        const fetchFilters = async () => {
+        // ─── Info modal ──────────────────────────────────────────────────────
+
+        const openInfoModal = async (item) => {
             try {
-                const [catRes, ratRes] = await Promise.all([
-                    fetch('api.php?action=categories'),
-                    fetch('api.php?action=ratings')
-                ]);
-                const catData = await catRes.json();
-                const ratData = await ratRes.json();
-
-                if (catData.status === 'success') categories.value = catData.data;
-                if (ratData.status === 'success') ratings.value = ratData.data;
-            } catch (error) {
-                console.error('Error fetching filters:', error);
+                const response = await fetch(`api.php?id=${item.id}`);
+                const result   = await response.json();
+                selectedMedia.value = result.status === 'success' ? result.data : { ...item };
+            } catch {
+                selectedMedia.value = { ...item };
             }
-        };
-
-        const debounceSearch = () => {
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-                fetchMedia(1);
-            }, 500);
-        };
-
-        // Watchers to automatically trigger search when filters change
-        watch([selectedRatings, selectedGenres, selectedStatuses, orderBy], () => {
-            fetchMedia(1);
-        }, { deep: true });
-
-        watch(searchQuery, () => {
-            debounceSearch();
-        });
-
-        const toggleSidebar = () => {
-            isSidebarOpen.value = !isSidebarOpen.value;
-        };
-
-        const resetFilters = () => {
-            selectedGenres.value = [];
-            selectedStatuses.value = [];
-            selectedRatings.value = [];
-            searchQuery.value = '';
-            fetchMedia(1);
-        };
-
-        const toggleTheme = () => {
-            isDarkMode.value = !isDarkMode.value;
-            localStorage.setItem('theme', isDarkMode.value ? 'dark' : 'light');
-            applyTheme();
-        };
-
-        const applyTheme = () => {
-            if (isDarkMode.value) {
-                document.documentElement.classList.add('dark-theme');
-            } else {
-                document.documentElement.classList.remove('dark-theme');
-            }
-        };
-
-        const openInfoModal = (item) => {
-            selectedMedia.value = { ...item };
             showInfoModal.value = true;
         };
 
         const closeInfoModal = () => {
-            showInfoModal.value = false;
-            selectedMedia.value = null;
+            showInfoModal.value  = false;
+            selectedMedia.value  = null;
         };
 
         const saveInfos = async () => {
             if (!selectedMedia.value) return;
             isSavingInfo.value = true;
             try {
-                const response = await fetch(`api.php?action=update&id=${selectedMedia.value.id}`, {
-                    method: 'PUT',
+                const response = await fetch(`api.php?action=update_infos&id=${selectedMedia.value.id}`, {
+                    method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(selectedMedia.value)
+                    body:    JSON.stringify({ infos: selectedMedia.value.infos }),
                 });
                 const result = await response.json();
                 if (result.status === 'success') {
-                    // Update the local item
                     const index = items.value.findIndex(i => i.id === selectedMedia.value.id);
                     if (index !== -1) {
                         items.value[index].infos = selectedMedia.value.infos;
                     }
                     closeInfoModal();
                 } else {
-                    alert('Error saving info: ' + result.message);
+                    alert('Error saving notes: ' + result.message);
                 }
             } catch (error) {
                 console.error('Error saving info:', error);
-                alert('An error occurred while saving.');
+                alert('An error occurred while saving notes.');
             } finally {
                 isSavingInfo.value = false;
             }
         };
 
-        const handleFileUpload = (event) => {
-            const file = event.target.files[0];
-            if (file) {
-                selectedFile.value = file;
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    imagePreview.value = e.target.result;
-                };
-                reader.readAsDataURL(file);
-            }
-        };
+        // ─── Add/Edit modal ──────────────────────────────────────────────────
 
         const openMediaModal = async (item = null) => {
-            selectedFile.value = null;
-            imagePreview.value = item?.image ? 'medias/' + item.image : null;
+            selectedFile.value  = null;
+            imagePreview.value  = item?.image ? 'medias/' + item.image : null;
+
             if (item) {
-                // Fetch full details of the media to get category_ids and rating_ids
                 try {
                     const response = await fetch(`api.php?id=${item.id}`);
-                    const result = await response.json();
+                    const result   = await response.json();
                     if (result.status === 'success') {
-                        const data = result.data;
+                        const d = result.data;
                         mediaForm.value = {
-                            id: data.id,
-                            title: data.title,
-                            image: data.image,
-                            year: data.year,
-                            score: parseFloat(data.score),
-                            score_mal: parseFloat(data.score_mal),
-                            status: data.status,
-                            infos: data.infos,
-                            category_id: data.category_id,
-                            rating_id: data.rating_id
+                            id:          d.id,
+                            title:       d.title,
+                            image:       d.image,
+                            year:        d.year,
+                            score:       parseFloat(d.score)     || 0,
+                            score_mal:   parseFloat(d.score_mal) || 0,
+                            status:      d.status,
+                            infos:       d.infos,
+                            category_id: d.category_id ? Number(d.category_id) : null,
+                            rating_id:   d.rating_id   ? Number(d.rating_id)   : null,
                         };
                     }
                 } catch (error) {
                     console.error('Error fetching media details:', error);
-                    // Fallback to basic data if fetch fails
                     mediaForm.value = {
                         ...item,
-                        category_id: item.category_id || null,
-                        rating_id: item.rating_id || null
+                        category_id: item.category_id ? Number(item.category_id) : null,
+                        rating_id:   item.rating_id   ? Number(item.rating_id)   : null,
                     };
                 }
             } else {
                 mediaForm.value = {
-                    id: null,
-                    title: '',
-                    image: '',
-                    year: String(new Date().getFullYear()),
-                    score: 0,
-                    score_mal: 0,
-                    status: null,
-                    infos: '',
+                    id:          null,
+                    title:       '',
+                    image:       '',
+                    year:        String(new Date().getFullYear()),
+                    score:       0,
+                    score_mal:   0,
+                    status:      null,
+                    infos:       '',
                     category_id: null,
-                    rating_id: null
+                    rating_id:   null,
                 };
             }
             showMediaModal.value = true;
@@ -323,57 +298,70 @@ createApp({
             showMediaModal.value = false;
         };
 
+        const handleFileUpload = (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            selectedFile.value = file;
+            const reader = new FileReader();
+            reader.onload = (e) => { imagePreview.value = e.target.result; };
+            reader.readAsDataURL(file);
+        };
+
         const saveMedia = async () => {
+            // Client-side validation
+            if (!mediaForm.value.title.trim()) {
+                alert('Title is required.');
+                return;
+            }
+
             isSavingMedia.value = true;
             try {
                 const isUpdate = !!mediaForm.value.id;
-                const url = isUpdate ? `api.php?id=${mediaForm.value.id}` : 'api.php';
+                const url      = isUpdate ? `api.php?id=${mediaForm.value.id}` : 'api.php';
 
                 const formData = new FormData();
-                formData.append('title', mediaForm.value.title);
-                formData.append('year', mediaForm.value.year);
-                formData.append('score', mediaForm.value.score);
-                formData.append('score_mal', mediaForm.value.score_mal);
-                formData.append('status', mediaForm.value.status || '');
-                formData.append('infos', mediaForm.value.infos || '');
-                formData.append('category_ids', mediaForm.value.category_id || '');
-                formData.append('rating_ids', mediaForm.value.rating_id || '');
+                formData.append('title',        mediaForm.value.title.trim());
+                formData.append('year',         mediaForm.value.year);
+                formData.append('score',        mediaForm.value.score);
+                formData.append('score_mal',    mediaForm.value.score_mal);
+                // Send empty string for null status; PHP converts it back to NULL
+                formData.append('status',       mediaForm.value.status ?? '');
+                formData.append('infos',        mediaForm.value.infos ?? '');
+                formData.append('category_ids', mediaForm.value.category_id ?? '');
+                formData.append('rating_ids',   mediaForm.value.rating_id   ?? '');
 
                 if (selectedFile.value) {
                     formData.append('image_file', selectedFile.value);
                 } else {
-                    formData.append('image', mediaForm.value.image || '');
+                    formData.append('image', mediaForm.value.image ?? '');
                 }
 
-                const response = await fetch(url, {
-                    method: 'POST',
-                    body: formData
-                });
+                const response = await fetch(url, { method: 'POST', body: formData });
+                const result   = await response.json();
 
-                const result = await response.json();
                 if (result.status === 'success') {
                     closeMediaModal();
-                    fetchMedia(); // Refresh the list
+                    fetchMedia(isUpdate ? currentPage.value : 1);
                 } else {
                     alert('Error: ' + result.message);
                 }
             } catch (error) {
                 console.error('Error saving media:', error);
-                alert('An error occurred.');
+                alert('An error occurred while saving.');
             } finally {
                 isSavingMedia.value = false;
             }
         };
 
+        // ─── Delete ──────────────────────────────────────────────────────────
+
         const deleteMedia = async (id) => {
             if (!confirm('Are you sure you want to delete this media?')) return;
             try {
-                const response = await fetch(`api.php?id=${id}`, {
-                    method: 'DELETE'
-                });
-                const result = await response.json();
+                const response = await fetch(`api.php?id=${id}`, { method: 'DELETE' });
+                const result   = await response.json();
                 if (result.status === 'success') {
-                    fetchMedia();
+                    fetchMedia(currentPage.value);
                 } else {
                     alert('Error: ' + result.message);
                 }
@@ -382,53 +370,51 @@ createApp({
             }
         };
 
+        // ─── Theme ───────────────────────────────────────────────────────────
+
+        const applyTheme = () => {
+            document.documentElement.classList.toggle('dark-theme', isDarkMode.value);
+        };
+
+        const toggleTheme = () => {
+            isDarkMode.value = !isDarkMode.value;
+            localStorage.setItem('theme', isDarkMode.value ? 'dark' : 'light');
+            applyTheme();
+        };
+
+        const toggleSidebar = () => {
+            isSidebarOpen.value = !isSidebarOpen.value;
+        };
+
+        // ─── Init ────────────────────────────────────────────────────────────
+
         onMounted(() => {
             applyTheme();
             fetchMedia();
             fetchFilters();
         });
 
+        // ─── Expose to template ──────────────────────────────────────────────
+
         return {
-            currentPage,
-            pageSize,
-            totalItems,
-            totalPages,
+            // List state
+            items, loading, currentPage, pageSize, totalItems, totalPages,
+            // Filters & search
+            categories, ratings, searchQuery, selectedGenres, selectedStatuses, selectedRatings,
+            orderBy, searchActive,
+            // Pagination
             changePage,
-            items,
-            categories,
-            ratings,
-            searchQuery,
-            selectedGenres,
-            selectedStatuses,
-            selectedRatings,
-            loading,
-            isSidebarOpen,
-            searchActive,
-            orderBy,
-            isDarkMode,
-            toggleSidebar,
-            toggleTheme,
-            toggleWatchStatus,
-            updateScore,
-            debounceSearch,
-            fetchMedia,
-            fetchRandomMedia,
-            resetFilters,
-            showInfoModal,
-            showMediaModal,
-            selectedMedia,
-            mediaForm,
-            isSavingInfo,
-            isSavingMedia,
-            openInfoModal,
-            closeInfoModal,
-            saveInfos,
-            imagePreview,
-            handleFileUpload,
-            openMediaModal,
-            closeMediaModal,
-            saveMedia,
-            deleteMedia
+            // Actions
+            fetchMedia, fetchRandomMedia, resetFilters,
+            toggleWatchStatus, updateScore, deleteMedia,
+            // Info modal
+            showInfoModal, selectedMedia, isSavingInfo,
+            openInfoModal, closeInfoModal, saveInfos,
+            // Add/Edit modal
+            showMediaModal, mediaForm, isSavingMedia, imagePreview,
+            openMediaModal, closeMediaModal, handleFileUpload, saveMedia,
+            // UI
+            isSidebarOpen, isDarkMode, toggleSidebar, toggleTheme,
         };
     }
 }).mount('#app');

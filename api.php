@@ -1,188 +1,206 @@
 <?php
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
+header("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 
-require_once 'Database.php';
-require_once 'MediaManager.php';
-
-$pdo = Database::connect();
-$manager = new MediaManager($pdo);
-
-$method = $_SERVER['REQUEST_METHOD'];
-$action = $_GET['action'] ?? '';
-$id = $_GET['id'] ?? null;
-
-// Handle CORS Preflight
-if ($method == "OPTIONS") {
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
+require_once 'Database.php';
+require_once 'MediaManager.php';
+
+$pdo     = Database::connect();
+$manager = new MediaManager($pdo);
+$method  = $_SERVER['REQUEST_METHOD'];
+$action  = $_GET['action'] ?? '';
+$id      = isset($_GET['id']) ? (int) $_GET['id'] : null;
+
 try {
     switch ($method) {
-        case 'GET':
-            $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
-            $page = isset($_GET['page']) ? (int) $_GET['page'] : 1;
-            $offset = ($page - 1) * $limit;
-            $orderBy = $_GET['order_by'] ?? 'm.created_at DESC';
-
-            if ($action === 'categories') {
-                $categories = $manager->getCategories();
-                echo json_encode(["status" => "success", "data" => $categories]);
-            } elseif ($action === 'ratings') {
-                $ratings = $manager->getRatings();
-                echo json_encode(["status" => "success", "data" => $ratings]);
-            } elseif ($action === 'random') {
-                $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
-                $results = $manager->getRandomMedia($limit);
-                echo json_encode(["status" => "success", "data" => $results]);
-            } elseif ($id) {
-                $item = $manager->getMediaById($id);
-                if ($item) {
-                    echo json_encode(["status" => "success", "data" => $item]);
-                } else {
-                    http_response_code(404);
-                    echo json_encode(["status" => "error", "message" => "Media not found"]);
-                }
-            } else {
-                // List view (either filtered or default)
-                $keyword = $_GET['keyword'] ?? '';
-                $categoryIds = !empty($_GET['category_ids']) ? explode(',', $_GET['category_ids']) : [];
-                $ratingIds = !empty($_GET['rating_ids']) ? explode(',', $_GET['rating_ids']) : [];
-                $statuses = !empty($_GET['statuses']) ? explode(',', $_GET['statuses']) : [];
-
-                $results = $manager->filterMedia($keyword, $categoryIds, $ratingIds, $statuses, $limit, $offset, $orderBy);
-                $total = $manager->countFilteredMedia($keyword, $categoryIds, $ratingIds, $statuses);
-
-                echo json_encode([
-                    "status" => "success",
-                    "data" => $results,
-                    "pagination" => [
-                        "total" => $total,
-                        "page" => $page,
-                        "limit" => $limit,
-                        "pages" => ceil($total / $limit)
-                    ]
-                ]);
-            }
-            break;
-
-        case 'POST':
-            $id = $_GET['id'] ?? null;
-            $data = json_decode(file_get_contents("php://input"), true);
-            if (!$data) {
-                $data = $_POST;
-            }
-
-            // Status/Score updates remain unchanged
-            if ($action === 'update_status') {
-                if (!$id) {
-                    http_response_code(400);
-                    echo json_encode(["status" => "error", "message" => "ID is required"]);
-                    break;
-                }
-                $manager->updateStatus($id, $data['status']);
-                echo json_encode(["status" => "success", "message" => "Status updated"]);
-                break;
-            }
-
-            if ($action === 'update_score') {
-                if (!$id || !isset($data['score'])) {
-                    http_response_code(400);
-                    echo json_encode(["status" => "error", "message" => "ID and score are required"]);
-                    break;
-                }
-                $manager->updateScore($id, $data['score']);
-                echo json_encode(["status" => "success", "message" => "Score updated"]);
-                break;
-            }
-
-            // Image processing
-            $imageName = $data['image'] ?? '';
-            if (!empty($_FILES['image_file']['name'])) {
-                $uploadDir = 'medias/';
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0777, true);
-                }
-                $fileInfo = pathinfo($_FILES['image_file']['name']);
-                $extension = strtolower($fileInfo['extension']);
-                $imageName = bin2hex(random_bytes(10)) . '.' . $extension;
-                move_uploaded_file($_FILES['image_file']['tmp_name'], $uploadDir . $imageName);
-            }
-
-            if (empty($data['title'])) {
-                http_response_code(400);
-                echo json_encode(["status" => "error", "message" => "Title is required"]);
-                break;
-            }
-
-            $categoryId = null;
-            if (!empty($data['category_ids'])) {
-                $categoryId = is_array($data['category_ids']) ? $data['category_ids'][0] : $data['category_ids'];
-            }
-
-            $ratingId = null;
-            if (!empty($data['rating_ids'])) {
-                $ratingId = is_array($data['rating_ids']) ? $data['rating_ids'][0] : $data['rating_ids'];
-            }
-
-            if ($id) {
-                // Update
-                $manager->updateMedia(
-                    $id,
-                    $data['title'],
-                    $imageName,
-                    $categoryId,
-                    $ratingId,
-                    $data['year'] ?? date('Y'),
-                    $data['score'] ?? 0,
-                    $data['score_mal'] ?? 0,
-                    $data['status'] ?? null,
-                    $data['infos'] ?? ''
-                );
-                echo json_encode(["status" => "success", "message" => "Media updated"]);
-            } else {
-                // Create
-                $newId = $manager->createMedia(
-                    $data['title'],
-                    $imageName,
-                    $categoryId,
-                    $ratingId,
-                    $data['year'] ?? date('Y'),
-                    $data['score'] ?? 0,
-                    $data['score_mal'] ?? 0,
-                    $data['status'] ?? null,
-                    $data['infos'] ?? ''
-                );
-                echo json_encode(["status" => "success", "message" => "Media created", "id" => $newId]);
-            }
-            break;
-
-        case 'PUT':
-            // PUT is now handled by POST for FormData consistency
-            http_response_code(405);
-            echo json_encode(["status" => "error", "message" => "Please use POST for updates with file uploads"]);
-            break;
-
-        case 'DELETE':
-            if (!$id) {
-                http_response_code(400);
-                echo json_encode(["status" => "error", "message" => "ID is required for deletion"]);
-                break;
-            }
-
-            $manager->deleteMedia($id);
-            echo json_encode(["status" => "success", "message" => "Media deleted"]);
-            break;
-
+        case 'GET':    handleGet($manager, $action, $id);    break;
+        case 'POST':   handlePost($manager, $action, $id);   break;
+        case 'DELETE': handleDelete($manager, $id);          break;
         default:
             http_response_code(405);
             echo json_encode(["status" => "error", "message" => "Method not allowed"]);
-            break;
     }
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(["status" => "error", "message" => $e->getMessage()]);
+}
+
+// ─── GET ─────────────────────────────────────────────────────────────────────
+
+function handleGet($manager, $action, $id)
+{
+    if ($action === 'categories') {
+        echo json_encode(["status" => "success", "data" => $manager->getCategories()]);
+        return;
+    }
+
+    if ($action === 'ratings') {
+        echo json_encode(["status" => "success", "data" => $manager->getRatings()]);
+        return;
+    }
+
+    if ($action === 'random') {
+        $limit = isset($_GET['limit']) ? (int) $_GET['limit'] : 20;
+        echo json_encode(["status" => "success", "data" => $manager->getRandomMedia($limit)]);
+        return;
+    }
+
+    if ($id !== null) {
+        $item = $manager->getMediaById($id);
+        if ($item) {
+            echo json_encode(["status" => "success", "data" => $item]);
+        } else {
+            http_response_code(404);
+            echo json_encode(["status" => "error", "message" => "Media not found"]);
+        }
+        return;
+    }
+
+    // Paginated / filtered list
+    $limit   = isset($_GET['limit'])    ? (int) $_GET['limit'] : 20;
+    $page    = isset($_GET['page'])     ? (int) $_GET['page']  : 1;
+    $offset  = ($page - 1) * $limit;
+    $orderBy = $_GET['order_by'] ?? 'm.created_at DESC';
+
+    $keyword     = trim($_GET['keyword'] ?? '');
+    $categoryIds = !empty($_GET['category_ids']) ? explode(',', $_GET['category_ids']) : [];
+    $ratingIds   = !empty($_GET['rating_ids'])   ? explode(',', $_GET['rating_ids'])   : [];
+    $statuses    = !empty($_GET['statuses'])      ? explode(',', $_GET['statuses'])     : [];
+
+    $results = $manager->filterMedia($keyword, $categoryIds, $ratingIds, $statuses, $limit, $offset, $orderBy);
+    $total   = $manager->countFilteredMedia($keyword, $categoryIds, $ratingIds, $statuses);
+
+    echo json_encode([
+        "status" => "success",
+        "data"   => $results,
+        "pagination" => [
+            "total" => $total,
+            "page"  => $page,
+            "limit" => $limit,
+            "pages" => $total > 0 ? (int) ceil($total / $limit) : 1,
+        ],
+    ]);
+}
+
+// ─── POST ─────────────────────────────────────────────────────────────────────
+
+function handlePost($manager, $action, $id)
+{
+    // Try JSON body first (for fetch with Content-Type: application/json),
+    // then fall back to $_POST (for FormData submissions).
+    $data = json_decode(file_get_contents("php://input"), true) ?? $_POST;
+
+    if ($action === 'update_status') {
+        if (!$id) {
+            http_response_code(400);
+            echo json_encode(["status" => "error", "message" => "ID is required"]);
+            return;
+        }
+        $manager->updateStatus($id, $data['status'] ?? null);
+        echo json_encode(["status" => "success", "message" => "Status updated"]);
+        return;
+    }
+
+    if ($action === 'update_score') {
+        if (!$id || !isset($data['score'])) {
+            http_response_code(400);
+            echo json_encode(["status" => "error", "message" => "ID and score are required"]);
+            return;
+        }
+        $manager->updateScore($id, $data['score']);
+        echo json_encode(["status" => "success", "message" => "Score updated"]);
+        return;
+    }
+
+    // Dedicated action for saving the infos/notes field only — avoids
+    // accidentally overwriting category/rating when only notes are edited.
+    if ($action === 'update_infos') {
+        if (!$id) {
+            http_response_code(400);
+            echo json_encode(["status" => "error", "message" => "ID is required"]);
+            return;
+        }
+        $manager->updateInfos($id, $data['infos'] ?? '');
+        echo json_encode(["status" => "success", "message" => "Infos updated"]);
+        return;
+    }
+
+    // ── Create or full update ─────────────────────────────────────────────────
+
+    if (empty($data['title'])) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "Title is required"]);
+        return;
+    }
+
+    // Handle optional file upload; preserve existing image name if no new file.
+    $imageName = $data['image'] ?? '';
+    if (!empty($_FILES['image_file']['name'])) {
+        $uploadDir = 'medias/';
+        if (!is_dir($uploadDir)) {
+            mkdir($uploadDir, 0777, true);
+        }
+        $ext       = strtolower(pathinfo($_FILES['image_file']['name'], PATHINFO_EXTENSION));
+        $imageName = bin2hex(random_bytes(10)) . '.' . $ext;
+        move_uploaded_file($_FILES['image_file']['tmp_name'], $uploadDir . $imageName);
+    }
+
+    // Accept both singular (category_id) and plural (category_ids) field names
+    // so FormData and JSON payloads are handled consistently.
+    $categoryId = resolveId($data, 'category_id', 'category_ids');
+    $ratingId   = resolveId($data, 'rating_id',   'rating_ids');
+
+    $year     = !empty($data['year'])     ? $data['year']          : date('Y');
+    $score    = isset($data['score'])     ? (float) $data['score']     : 0.0;
+    $scoreMal = isset($data['score_mal']) ? (float) $data['score_mal'] : 0.0;
+    $status   = sanitizeStatus($data['status'] ?? null);
+    $infos    = $data['infos'] ?? '';
+
+    if ($id !== null) {
+        $manager->updateMedia($id, $data['title'], $imageName, $categoryId, $ratingId, $year, $score, $scoreMal, $status, $infos);
+        echo json_encode(["status" => "success", "message" => "Media updated"]);
+    } else {
+        $newId = $manager->createMedia($data['title'], $imageName, $categoryId, $ratingId, $year, $score, $scoreMal, $status, $infos);
+        echo json_encode(["status" => "success", "message" => "Media created", "id" => $newId]);
+    }
+}
+
+// ─── DELETE ──────────────────────────────────────────────────────────────────
+
+function handleDelete($manager, $id)
+{
+    if (!$id) {
+        http_response_code(400);
+        echo json_encode(["status" => "error", "message" => "ID is required for deletion"]);
+        return;
+    }
+    $manager->deleteMedia($id);
+    echo json_encode(["status" => "success", "message" => "Media deleted"]);
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Resolve an ID from either the singular or plural key in the request data.
+function resolveId($data, $singular, $plural)
+{
+    if (!empty($data[$plural])) {
+        $val = is_array($data[$plural]) ? $data[$plural][0] : $data[$plural];
+        return $val ?: null;
+    }
+    if (!empty($data[$singular])) {
+        return $data[$singular] ?: null;
+    }
+    return null;
+}
+
+function sanitizeStatus($status)
+{
+    return ($status === '' || $status === 'null' || $status === null) ? null : $status;
 }
