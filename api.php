@@ -98,7 +98,7 @@ function handlePost($manager, $action, $id)
     $data = json_decode(file_get_contents("php://input"), true) ?? $_POST;
 
     if ($action === 'update_status') {
-        if (!$id) {
+        if ($id === null) {
             http_response_code(400);
             echo json_encode(["status" => "error", "message" => "ID is required"]);
             return;
@@ -109,7 +109,7 @@ function handlePost($manager, $action, $id)
     }
 
     if ($action === 'update_score') {
-        if (!$id || !isset($data['score'])) {
+        if ($id === null || !isset($data['score'])) {
             http_response_code(400);
             echo json_encode(["status" => "error", "message" => "ID and score are required"]);
             return;
@@ -122,7 +122,7 @@ function handlePost($manager, $action, $id)
     // Dedicated action for saving the infos/notes field only — avoids
     // accidentally overwriting category/rating when only notes are edited.
     if ($action === 'update_infos') {
-        if (!$id) {
+        if ($id === null) {
             http_response_code(400);
             echo json_encode(["status" => "error", "message" => "ID is required"]);
             return;
@@ -176,7 +176,7 @@ function handlePost($manager, $action, $id)
 
 function handleDelete($manager, $id)
 {
-    if (!$id) {
+    if ($id === null) {
         http_response_code(400);
         echo json_encode(["status" => "error", "message" => "ID is required for deletion"]);
         return;
