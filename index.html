@@ -103,6 +103,14 @@
                         Plan to Watch
                     </label>
                     <label class="checkbox-item">
+                        <input type="checkbox" value="Read" v-model="selectedStatuses">
+                        Read
+                    </label>
+                    <label class="checkbox-item">
+                        <input type="checkbox" value="Plan to Read" v-model="selectedStatuses">
+                        Plan to Read
+                    </label>
+                    <label class="checkbox-item">
                         <input type="checkbox" value="null" v-model="selectedStatuses">
                         Not in List
                     </label>
@@ -130,8 +138,8 @@
             <div v-else class="anime-grid">
                 <div v-for="item in items" :key="item.id" class="card" @click="toggleWatchStatus(item)">
                     <div class="tag-status"
-                        :class="item.status ? (item.status === 'Watched' ? 'watched' : 'plan') : 'none'">
-                        {{ item.status ? item.status : '+ Add' }}
+                        :class="item.status ? (['Watched','Read'].includes(item.status) ? 'watched' : 'plan') : 'none'">
+                        {{ item.status ?? '+ Add' }}
                     </div>
                     <div class="card-image-wrapper">
                         <div class="tag-rating" v-if="item.ratings">
@@ -237,8 +245,10 @@
                                 <label>Status</label>
                                 <select v-model="mediaForm.status">
                                     <option :value="null">None (Not in List)</option>
-                                    <option value="Plan to Watch">Plan to Watch</option>
-                                    <option value="Watched">Watched</option>
+                                    <option v-if="!isBookFormCategory" value="Plan to Watch">Plan to Watch</option>
+                                    <option v-if="isBookFormCategory" value="Plan to Read">Plan to Read</option>
+                                    <option v-if="!isBookFormCategory" value="Watched">Watched</option>
+                                    <option v-if="isBookFormCategory" value="Read">Read</option>
                                 </select>
                             </div>
                         </div>

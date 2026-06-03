@@ -161,12 +161,16 @@ createApp({
 
         // ─── Status / score quick-updates ────────────────────────────────────
 
+        const isBookCategory = (item) =>
+            (item.categories || '').toLowerCase().includes('book');
+
         const toggleWatchStatus = async (item) => {
-            const next = !item.status
-                ? 'Plan to Watch'
-                : item.status === 'Plan to Watch'
-                    ? 'Watched'
-                    : null;
+            const book       = isBookCategory(item);
+            const planStatus = book ? 'Plan to Read'  : 'Plan to Watch';
+            const doneStatus = book ? 'Read'          : 'Watched';
+            const isPlan     = (s) => s === 'Plan to Watch' || s === 'Plan to Read';
+
+            const next = !item.status ? planStatus : isPlan(item.status) ? doneStatus : null;
 
             try {
                 const response = await fetch(`api.php?action=update_status&id=${item.id}`, {
@@ -370,6 +374,12 @@ createApp({
             }
         };
 
+        // Category-aware status labels for the Add/Edit modal
+        const isBookFormCategory = computed(() => {
+            const cat = categories.value.find(c => c.id === mediaForm.value.category_id);
+            return cat ? cat.name.toLowerCase().includes('book') : false;
+        });
+
         // ─── Theme ───────────────────────────────────────────────────────────
 
         const applyTheme = () => {
@@ -411,7 +421,7 @@ createApp({
             showInfoModal, selectedMedia, isSavingInfo,
             openInfoModal, closeInfoModal, saveInfos,
             // Add/Edit modal
-            showMediaModal, mediaForm, isSavingMedia, imagePreview,
+            showMediaModal, mediaForm, isSavingMedia, imagePreview, isBookFormCategory,
             openMediaModal, closeMediaModal, handleFileUpload, saveMedia,
             // UI
             isSidebarOpen, isDarkMode, toggleSidebar, toggleTheme,
