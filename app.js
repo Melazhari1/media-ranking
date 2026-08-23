@@ -17,6 +17,21 @@ createApp({
         const isSidebarOpen  = ref(false);
         const isDarkMode     = ref(localStorage.getItem('theme') === 'dark');
 
+        // Filter dropdowns (accordion-style: opening one closes the others)
+        const openFilterGroup = ref(null); // 'ratings' | 'categories' | 'status' | null
+        const toggleFilterGroup = (group) => {
+            openFilterGroup.value = openFilterGroup.value === group ? null : group;
+        };
+
+        // Hentai-rated cover images are blurred until the user clicks the eye icon.
+        const revealedMedia = ref({});
+        const isHentai   = (item) => (item.rating_label || '').toLowerCase() === 'hentai';
+        const isRevealed = (item) => !!revealedMedia.value[item.id];
+        const isImageHidden = (item) => isHentai(item) && !isRevealed(item);
+        const toggleReveal = (item) => {
+            revealedMedia.value[item.id] = !isRevealed(item);
+        };
+
         const currentPage  = ref(1);
         const pageSize     = ref(20);
         const totalItems   = ref(0);
@@ -52,6 +67,41 @@ createApp({
             selectedRatings.value.length > 0 ||
             selectedStatuses.value.length > 0
         );
+
+        const statusOptions = [
+            { value: 'Watched',        label: 'Watched' },
+            { value: 'Plan to Watch',  label: 'Plan to Watch' },
+            { value: 'Read',           label: 'Read' },
+            { value: 'Plan to Read',   label: 'Plan to Read' },
+            { value: 'null',           label: 'Not in List' },
+        ];
+
+        const ratingLabel = computed(() => {
+            if (!selectedRatings.value.length) return 'All Ratings';
+            if (selectedRatings.value.length === 1) {
+                const r = ratings.value.find(r => r.id === selectedRatings.value[0]);
+                return r ? r.label : '1 selected';
+            }
+            return selectedRatings.value.length + ' selected';
+        });
+
+        const categoryLabel = computed(() => {
+            if (!selectedGenres.value.length) return 'All Categories';
+            if (selectedGenres.value.length === 1) {
+                const c = categories.value.find(c => c.id === selectedGenres.value[0]);
+                return c ? c.name : '1 selected';
+            }
+            return selectedGenres.value.length + ' selected';
+        });
+
+        const statusLabel = computed(() => {
+            if (!selectedStatuses.value.length) return 'All Statuses';
+            if (selectedStatuses.value.length === 1) {
+                const s = statusOptions.find(s => s.value === selectedStatuses.value[0]);
+                return s ? s.label : '1 selected';
+            }
+            return selectedStatuses.value.length + ' selected';
+        });
 
         let debounceTimer = null;
 
@@ -411,7 +461,9 @@ createApp({
             items, loading, currentPage, pageSize, totalItems, totalPages,
             // Filters & search
             categories, ratings, searchQuery, selectedGenres, selectedStatuses, selectedRatings,
-            orderBy, searchActive,
+            orderBy, searchActive, statusOptions,
+            ratingLabel, categoryLabel, statusLabel, openFilterGroup, toggleFilterGroup,
+            isHentai, isImageHidden, toggleReveal,
             // Pagination
             changePage,
             // Actions
