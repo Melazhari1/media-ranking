@@ -26,7 +26,7 @@ $server = new PDO(
 );
 $db = '`' . str_replace('`', '', $config['dbname']) . '`';
 $server->exec("DROP DATABASE IF EXISTS $db");
-$server->exec("CREATE DATABASE $db CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+$server->exec("CREATE DATABASE $db CHARACTER SET utf8mb4");
 $server->exec("USE $db");
 $server->exec(file_get_contents(__DIR__ . '/fixtures/baseline-schema.sql'));
 

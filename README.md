@@ -5,7 +5,10 @@ Personal media watchlist: Vue 3 (CDN, no build step) frontend, plain-PHP JSON AP
 ## Requirements
 
 - PHP ≥ 8.1 with `intl`, `mbstring`, `pdo_mysql`
-- MySQL 8+
+- MySQL 8+ **or MariaDB 10.6+** (production runs MariaDB). Migrations avoid engine-specific SQL: no `REGEXP`
+  in generated columns (MariaDB error #1901) and new tables copy the `media` table's charset/collation
+  (`App\Database\TableOptions`). The full test suite passes on MySQL 9.1 and MariaDB 11.5:
+  `DB_HOST=127.0.0.1 DB_PORT=3307 composer test` runs it against WAMP's MariaDB.
 - Composer (runtime + tests). Node ≥ 20 only for lint/tests — the site needs no build.
 
 ## Setup

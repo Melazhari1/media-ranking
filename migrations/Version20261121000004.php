@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Migrations;
 
+use App\Database\TableOptions;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\Migrations\AbstractMigration;
 
@@ -17,6 +18,7 @@ final class Version20261121000004 extends AbstractMigration
 
     public function up(Schema $schema): void
     {
+        $options = TableOptions::sql($this->connection);
         $this->addSql("CREATE TABLE tags (
             id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
             name       VARCHAR(64)  NOT NULL,
@@ -24,7 +26,7 @@ final class Version20261121000004 extends AbstractMigration
             created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
             UNIQUE KEY uniq_tags_slug (slug)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
 
         $this->addSql("CREATE TABLE media_tag (
             media_id INT          NOT NULL,
@@ -33,7 +35,7 @@ final class Version20261121000004 extends AbstractMigration
             KEY idx_media_tag_tag (tag_id),
             CONSTRAINT fk_media_tag_media FOREIGN KEY (media_id) REFERENCES media (id) ON DELETE CASCADE,
             CONSTRAINT fk_media_tag_tag   FOREIGN KEY (tag_id)   REFERENCES tags (id)  ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
     }
 
     public function down(Schema $schema): void

@@ -148,7 +148,9 @@ final class Phase2Test extends DatabaseTestCase
         $s = (new StatsService(self::$pdo, new \App\Cache\FileCache($this->varDir, 'stats')))->compute();
         self::assertSame(3, $s['totals']['in_list']);
         self::assertSame(4, $s['totals']['all']);
-        self::assertSame(['done' => 1, 'active' => 1, 'plan' => 1], array_intersect_key($s['totals']['by_group'], ['done' => 0, 'active' => 0, 'plan' => 0]));
+        $groups = array_intersect_key($s['totals']['by_group'], ['done' => 0, 'active' => 0, 'plan' => 0]);
+        ksort($groups); // ties have no defined order
+        self::assertSame(['active' => 1, 'done' => 1, 'plan' => 1], $groups);
         self::assertSame(7.8, $s['ratings']['my_avg']);
         self::assertSame(7.5, $s['ratings']['public_avg']);
         self::assertSame(1, $s['ratings']['distribution'][9]);

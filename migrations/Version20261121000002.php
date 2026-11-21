@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Migrations;
 
+use App\Database\TableOptions;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\Migrations\AbstractMigration;
 
@@ -23,6 +24,7 @@ final class Version20261121000002 extends AbstractMigration
 
     public function up(Schema $schema): void
     {
+        $options = TableOptions::sql($this->connection);
         $this->addSql("ALTER TABLE media
             ADD COLUMN progress_current INT UNSIGNED NULL AFTER status,
             ADD COLUMN progress_total   INT UNSIGNED NULL AFTER progress_current,
@@ -44,7 +46,7 @@ final class Version20261121000002 extends AbstractMigration
             KEY idx_rewatch_log_media (media_id),
             KEY idx_rewatch_log_finished (finished_at),
             CONSTRAINT fk_rewatch_log_media FOREIGN KEY (media_id) REFERENCES media (id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
     }
 
     public function down(Schema $schema): void

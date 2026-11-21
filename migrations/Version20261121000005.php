@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Migrations;
 
+use App\Database\TableOptions;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\Migrations\AbstractMigration;
 
@@ -17,6 +18,7 @@ final class Version20261121000005 extends AbstractMigration
 
     public function up(Schema $schema): void
     {
+        $options = TableOptions::sql($this->connection);
         $this->addSql("CREATE TABLE user_lists (
             id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
             name        VARCHAR(100) NOT NULL,
@@ -29,7 +31,7 @@ final class Version20261121000005 extends AbstractMigration
             PRIMARY KEY (id),
             UNIQUE KEY uniq_user_lists_slug (slug),
             KEY idx_user_lists_position (position)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
 
         $this->addSql("CREATE TABLE user_list_media (
             list_id  INT UNSIGNED NOT NULL,
@@ -41,7 +43,7 @@ final class Version20261121000005 extends AbstractMigration
             KEY idx_user_list_media_media (media_id),
             CONSTRAINT fk_user_list_media_list  FOREIGN KEY (list_id)  REFERENCES user_lists (id) ON DELETE CASCADE,
             CONSTRAINT fk_user_list_media_media FOREIGN KEY (media_id) REFERENCES media (id)      ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
     }
 
     public function down(Schema $schema): void

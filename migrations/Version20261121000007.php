@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Migrations;
 
+use App\Database\TableOptions;
 use Doctrine\DBAL\Schema\Schema;
 use Doctrine\Migrations\AbstractMigration;
 
@@ -17,12 +18,13 @@ final class Version20261121000007 extends AbstractMigration
 
     public function up(Schema $schema): void
     {
+        $options = TableOptions::sql($this->connection);
         $this->addSql("CREATE TABLE settings (
             name       VARCHAR(64) NOT NULL,
             value      TEXT        NULL,
             updated_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (name)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci");
+        ) " . $options);
     }
 
     public function down(Schema $schema): void
