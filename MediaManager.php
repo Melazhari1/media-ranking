@@ -46,7 +46,19 @@ class MediaManager
         // release_year is numeric (generated from `year`); "N/A" years go last both ways.
         'm.year DESC'         => 'm.release_year DESC, m.year DESC',
         'm.year ASC'          => '(m.release_year IS NULL), m.release_year ASC, m.year ASC',
+        // Progress percentage (items without a total go last)
+        'progress DESC'       => '(m.progress_total IS NULL OR m.progress_total = 0), (COALESCE(m.progress_current, 0) / NULLIF(m.progress_total, 0)) DESC',
+        'progress ASC'        => '(m.progress_total IS NULL OR m.progress_total = 0), (COALESCE(m.progress_current, 0) / NULLIF(m.progress_total, 0)) ASC',
+        'm.status ASC'        => "(m.status IS NULL OR m.status = ''), m.status ASC",
+        'm.status DESC'       => "(m.status IS NULL OR m.status = ''), m.status DESC",
+        'category ASC'        => '(c.name IS NULL), c.name ASC',
+        'category DESC'       => '(c.name IS NULL), c.name DESC',
+        'finished DESC'       => '(m.finished_at IS NULL), m.finished_at DESC',
+        'list_position'       => 'm.created_at DESC', // replaced in search() when a list filter is active
     ];
+
+    /** Rating names treated as adult content (blurred in the UI, excluded from public pages). */
+    public const ADULT_RATINGS = ['Rx'];
 
     private PDO $pdo;
     private ?array $unknownCategoryIds = null;
@@ -95,19 +107,28 @@ class MediaManager
         return $stmt->fetch();
     }
 
-    public function getRandomMedia($limit = 20)
+    /**
+     * Random items respecting the same filters as the list (e.g. random Plan to Watch horror movie).
+     * Accepts either an int limit (legacy) or a filter array + limit.
+     */
+    public function getRandomMedia($limitOrFilters = 20, int $limit = 20)
     {
+        $filters = is_array($limitOrFilters) ? $limitOrFilters : [];
+        $limit   = is_array($limitOrFilters) ? $limit : (int) $limitOrFilters;
+
+        $params = [];
+        $where  = $this->buildWhere($filters, $params);
         $stmt = $this->pdo->prepare(
             "SELECT " . self::SELECT_COLUMNS . " " . self::FROM . "
-             WHERE m.deleted_at IS NULL
+             WHERE m.deleted_at IS NULL $where
              ORDER BY RAND()
-             LIMIT :limit"
+             LIMIT " . max(1, min(100, $limit))
         );
-        $stmt->bindValue(':limit', max(1, min(100, (int) $limit)), PDO::PARAM_INT);
-        $stmt->execute();
+        $stmt->execute($params);
         return $stmt->fetchAll();
     }
 
+    /** Legacy positional signature (kept for callers/tests). */
     public function filterMedia(
         $keyword = '',
         $categoryIds = [],
@@ -117,35 +138,83 @@ class MediaManager
         $offset = 0,
         $orderBy = 'm.created_at DESC'
     ) {
-        $orderSql = self::SORTS[$orderBy] ?? self::SORTS['m.created_at DESC'];
+        return $this->search(
+            ['keyword' => $keyword, 'category_ids' => $categoryIds, 'rating_ids' => $ratingIds, 'statuses' => $statuses],
+            (int) $limit,
+            (int) $offset,
+            (string) $orderBy
+        );
+    }
 
+    public function countFilteredMedia($keyword = '', $categoryIds = [], $ratingIds = [], $statuses = [])
+    {
+        return $this->count(['keyword' => $keyword, 'category_ids' => $categoryIds, 'rating_ids' => $ratingIds, 'statuses' => $statuses]);
+    }
+
+    /**
+     * Filtered, sorted page of media.
+     *
+     * Filter keys: keyword, category_ids[], rating_ids[], statuses[] ('null' = not in list), tag_ids[],
+     * genre_ids[], list_id, finished_year, in_progress (bool), exclude_adult (bool), ids[], exclude_ids[].
+     */
+    public function search(array $filters, int $limit = 20, int $offset = 0, string $orderBy = 'm.created_at DESC'): array
+    {
+        $orderSql = self::SORTS[$orderBy] ?? self::SORTS['m.created_at DESC'];
         $params = [];
-        $where  = $this->buildWhereClause($keyword, $categoryIds, $ratingIds, $statuses, $params);
+        $where  = $this->buildWhere($filters, $params);
+        $join   = '';
+        if ($orderBy === 'list_position' && !empty($filters['list_id'])) {
+            $join     = ' JOIN user_list_media ulm_o ON ulm_o.media_id = m.id AND ulm_o.list_id = ' . (int) $filters['list_id'];
+            $orderSql = 'ulm_o.position ASC';
+        }
 
         // m.id is a tie-breaker so pages are stable when many rows share a sort value.
-        $sql = "SELECT " . self::SELECT_COLUMNS . " " . self::FROM . "
+        $sql = "SELECT " . self::SELECT_COLUMNS . " " . self::FROM . "$join
                 WHERE m.deleted_at IS NULL $where
                 ORDER BY $orderSql, m.id DESC
-                LIMIT " . max(1, (int) $limit) . " OFFSET " . max(0, (int) $offset);
+                LIMIT " . max(1, $limit) . " OFFSET " . max(0, $offset);
 
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll();
     }
 
-    public function countFilteredMedia($keyword = '', $categoryIds = [], $ratingIds = [], $statuses = [])
+    public function count(array $filters): int
     {
         $params = [];
-        $where  = $this->buildWhereClause($keyword, $categoryIds, $ratingIds, $statuses, $params);
-
-        $sql = "SELECT COUNT(m.id)
-                FROM media m
-                LEFT JOIN categories c ON m.category_id = c.id
-                WHERE m.deleted_at IS NULL $where";
-
-        $stmt = $this->pdo->prepare($sql);
+        $where  = $this->buildWhere($filters, $params);
+        $stmt = $this->pdo->prepare(
+            "SELECT COUNT(m.id) FROM media m
+             LEFT JOIN categories c ON m.category_id = c.id
+             LEFT JOIN ratings r    ON m.rating_id   = r.id
+             WHERE m.deleted_at IS NULL $where"
+        );
         $stmt->execute($params);
         return (int) $stmt->fetchColumn();
+    }
+
+    /** Iterate all rows matching $filters in id order, in chunks (export). */
+    public function iterate(array $filters, int $chunk = 500): \Generator
+    {
+        $lastId = 0;
+        while (true) {
+            $params = [];
+            $where  = $this->buildWhere($filters, $params);
+            $params[] = $lastId;
+            $stmt = $this->pdo->prepare(
+                "SELECT " . self::SELECT_COLUMNS . ", m.synopsis " . self::FROM . "
+                 WHERE m.deleted_at IS NULL $where AND m.id > ? ORDER BY m.id LIMIT " . (int) $chunk
+            );
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll();
+            if (!$rows) {
+                return;
+            }
+            foreach ($rows as $row) {
+                yield $row;
+            }
+            $lastId = (int) end($rows)['id'];
+        }
     }
 
     public function getCategories()
@@ -266,6 +335,148 @@ class MediaManager
         return $this->getMediaById($id);
     }
 
+    /**
+     * +N progress. Starts tracking automatically: sets started_at (if empty) and moves
+     * "not in list" / Plan to … into Watching/Reading (category-aware).
+     *
+     * @return array{item: array, reached_total: bool}|false
+     */
+    public function incrementProgress($id, int $by = 1)
+    {
+        $row = $this->getMediaById($id);
+        if (!$row) {
+            return false;
+        }
+        $total   = $row['progress_total'] !== null ? (int) $row['progress_total'] : null;
+        $current = (int) ($row['progress_current'] ?? 0) + $by;
+        $current = max(0, $total !== null ? min($current, $total) : $current);
+
+        $status = MediaStatus::tryFrom((string) $row['status']);
+        $set = ['progress_current' => $current];
+        if (!$row['started_at'] && $by > 0) {
+            $set['started_at'] = date('Y-m-d');
+        }
+        if ($by > 0 && ($status === null || $status->group() === 'plan')) {
+            $set['status'] = MediaStatus::Watching->forCategory($row['categories'])->value;
+        }
+        if (!$row['progress_unit']) {
+            $set['progress_unit'] = ProgressUnit::defaultFor($row['categories'])->value;
+        }
+
+        $cols = implode(', ', array_map(fn ($c) => "$c = :$c", array_keys($set)));
+        $this->pdo->prepare("UPDATE media SET $cols WHERE id = :id")->execute($set + ['id' => $id]);
+
+        $item = $this->getMediaById($id);
+        $done = MediaStatus::tryFrom((string) $item['status'])?->isDone() ?? false;
+        return ['item' => $item, 'reached_total' => $total !== null && $current >= $total && !$done];
+    }
+
+    /**
+     * Mark as Watched/Read: progress = total, finished_at = today (if empty).
+     * Completing a Rewatching item logs the rewatch (rewatch_count + rewatch_log) instead of
+     * overwriting the original finished_at.
+     */
+    public function completeMedia($id, ?string $finishedAt = null)
+    {
+        $row = $this->getMediaById($id);
+        if (!$row) {
+            return false;
+        }
+        $finishedAt = self::nullableDate('finished_at', $finishedAt) ?? date('Y-m-d');
+        $status = MediaStatus::tryFrom((string) $row['status']);
+
+        $set = ['status' => MediaStatus::Watched->forCategory($row['categories'])->value];
+        if ($row['progress_total'] !== null) {
+            $set['progress_current'] = (int) $row['progress_total'];
+        }
+
+        $this->pdo->beginTransaction();
+        try {
+            if ($status === MediaStatus::Rewatching) {
+                $this->logRewatch($id, null, $finishedAt, null, false);
+            } else {
+                if (!$row['finished_at']) {
+                    $set['finished_at'] = $finishedAt;
+                }
+                if (!$row['started_at']) {
+                    $set['started_at'] = min($finishedAt, date('Y-m-d'));
+                }
+            }
+            $cols = implode(', ', array_map(fn ($c) => "$c = :$c", array_keys($set)));
+            $this->pdo->prepare("UPDATE media SET $cols WHERE id = :id")->execute($set + ['id' => $id]);
+            $this->pdo->commit();
+        } catch (\Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+        return $this->getMediaById($id);
+    }
+
+    /** Record a rewatch/reread: adds a rewatch_log row and increments rewatch_count. */
+    public function logRewatch($id, ?string $startedAt, ?string $finishedAt, ?string $notes, bool $ownTransaction = true): bool
+    {
+        $startedAt  = self::nullableDate('started_at', $startedAt);
+        $finishedAt = self::nullableDate('finished_at', $finishedAt) ?? date('Y-m-d');
+        if ($startedAt && $startedAt > $finishedAt) {
+            throw new InvalidArgumentException('finished_at cannot be before started_at');
+        }
+        if (!$this->getMediaById($id)) {
+            return false;
+        }
+        $ownTransaction && $this->pdo->beginTransaction();
+        $this->pdo->prepare('INSERT INTO rewatch_log (media_id, started_at, finished_at, notes) VALUES (?, ?, ?, ?)')
+            ->execute([$id, $startedAt, $finishedAt, $notes !== null && trim($notes) !== '' ? trim($notes) : null]);
+        $this->pdo->prepare('UPDATE media SET rewatch_count = rewatch_count + 1 WHERE id = ?')->execute([$id]);
+        $ownTransaction && $this->pdo->commit();
+        return true;
+    }
+
+    public function rewatchLog($id): array
+    {
+        $stmt = $this->pdo->prepare('SELECT id, started_at, finished_at, notes, created_at FROM rewatch_log WHERE media_id = ? ORDER BY finished_at DESC, id DESC');
+        $stmt->execute([$id]);
+        return $stmt->fetchAll();
+    }
+
+    /**
+     * Set external metadata fields explicitly (Add/Edit form after choosing an auto-fill suggestion).
+     * Keys: external_source, external_id, synopsis, backdrop_url, last_synced_at.
+     */
+    public function updateMetadataFields($id, array $fields): void
+    {
+        $allowed = ['external_source', 'external_id', 'synopsis', 'backdrop_url', 'last_synced_at'];
+        $set = [];
+        foreach (array_intersect_key($fields, array_flip($allowed)) as $k => $v) {
+            $v = is_string($v) ? trim($v) : $v;
+            $set[$k] = ($v === '' ? null : $v);
+        }
+        if (isset($set['external_source']) && !in_array($set['external_source'], ['mal_anime', 'mal_manga', 'tmdb_movie', 'tmdb_tv'], true)) {
+            throw new InvalidArgumentException('Unknown external_source');
+        }
+        if (isset($set['external_id']) && !preg_match('/^[0-9]{1,12}$/', (string) $set['external_id'])) {
+            throw new InvalidArgumentException('Invalid external_id');
+        }
+        if (isset($set['backdrop_url']) && !preg_match('#^https://#', (string) $set['backdrop_url'])) {
+            throw new InvalidArgumentException('backdrop_url must be an https URL');
+        }
+        if (!$set) {
+            return;
+        }
+        $cols = implode(', ', array_map(fn ($c) => "$c = :$c", array_keys($set)));
+        $this->pdo->prepare("UPDATE media SET $cols WHERE id = :id")->execute($set + ['id' => $id]);
+    }
+
+    /** Lightweight rows for duplicate detection (importers). */
+    public function matchIndexRows(): array
+    {
+        return $this->pdo->query(
+            'SELECT m.id, m.title, m.release_year, m.external_source, m.external_id, m.status, m.score,
+                    m.progress_current, m.progress_total, m.started_at, m.finished_at, m.rewatch_count, m.infos,
+                    c.name AS category
+             FROM media m LEFT JOIN categories c ON c.id = m.category_id WHERE m.deleted_at IS NULL'
+        )->fetchAll();
+    }
+
     // ─── Delete (soft) ────────────────────────────────────────────────────────
 
     /** Soft delete: the row is hidden everywhere and can be restored; app:purge-deleted removes it for good. */
@@ -346,12 +557,14 @@ class MediaManager
         return $this->unknownCategoryIds;
     }
 
-    private function buildWhereClause($keyword, $categoryIds, $ratingIds, $statuses, &$params)
+    private function buildWhere(array $f, array &$params): string
     {
         $where = '';
+        $ints = fn ($v) => array_values(array_filter(array_map('intval', is_array($v) ? $v : explode(',', (string) $v))));
+        $placeholders = fn (array $v) => implode(',', array_fill(0, count($v), '?'));
 
-        if (!empty($keyword)) {
-            $keyword = trim($keyword);
+        $keyword = trim((string) ($f['keyword'] ?? ''));
+        if ($keyword !== '') {
             // Quoted keyword triggers exact title match
             if (preg_match('/^"(.*)"$/', $keyword, $matches)) {
                 $where    .= " AND m.title = ?";
@@ -365,46 +578,72 @@ class MediaManager
             }
         }
 
-        if (!empty($categoryIds)) {
-            $categoryIds  = array_map('intval', $categoryIds);
-            $placeholders = implode(',', array_fill(0, count($categoryIds), '?'));
+        if ($categoryIds = $ints($f['category_ids'] ?? [])) {
             // "Unknown" also matches media with no category or a dangling category id.
-            $includeUncategorized = (bool) array_intersect($categoryIds, $this->unknownCategoryIds());
-            $where .= $includeUncategorized
-                ? " AND (m.category_id IN ($placeholders) OR c.id IS NULL)"
-                : " AND m.category_id IN ($placeholders)";
-            foreach ($categoryIds as $id) {
-                $params[] = $id;
-            }
+            $cond = 'm.category_id IN (' . $placeholders($categoryIds) . ')';
+            $where .= array_intersect($categoryIds, $this->unknownCategoryIds()) ? " AND ($cond OR c.id IS NULL)" : " AND $cond";
+            array_push($params, ...$categoryIds);
         }
 
-        if (!empty($ratingIds)) {
-            $placeholders = implode(',', array_fill(0, count($ratingIds), '?'));
-            $where       .= " AND m.rating_id IN ($placeholders)";
-            foreach ($ratingIds as $id) {
-                $params[] = (int) $id;
-            }
+        if ($ratingIds = $ints($f['rating_ids'] ?? [])) {
+            $where .= ' AND m.rating_id IN (' . $placeholders($ratingIds) . ')';
+            array_push($params, ...$ratingIds);
         }
 
-        if (!empty($statuses)) {
-            $hasNull         = in_array('null', $statuses);
-            $nonNullStatuses = array_values(array_filter($statuses, fn($s) => $s !== 'null'));
+        $statuses = $f['statuses'] ?? [];
+        $statuses = is_array($statuses) ? $statuses : array_filter(explode(',', (string) $statuses), 'strlen');
+        if ($statuses) {
+            $hasNull         = in_array('null', $statuses, true);
+            $nonNullStatuses = array_values(array_filter($statuses, fn ($s) => $s !== 'null'));
             $nullCond        = "(m.status IS NULL OR m.status = '')";
-
-            if ($hasNull && empty($nonNullStatuses)) {
-                // Only "Not in List" selected
+            if ($hasNull && !$nonNullStatuses) {
                 $where .= " AND $nullCond";
-            } elseif (!empty($nonNullStatuses)) {
-                $placeholders = implode(',', array_fill(0, count($nonNullStatuses), '?'));
-                if ($hasNull) {
-                    $where .= " AND (m.status IN ($placeholders) OR $nullCond)";
-                } else {
-                    $where .= " AND m.status IN ($placeholders)";
-                }
-                foreach ($nonNullStatuses as $stat) {
-                    $params[] = $stat;
-                }
+            } elseif ($nonNullStatuses) {
+                $ph = $placeholders($nonNullStatuses);
+                $where .= $hasNull ? " AND (m.status IN ($ph) OR $nullCond)" : " AND m.status IN ($ph)";
+                array_push($params, ...$nonNullStatuses);
             }
+        }
+
+        if ($tagIds = $ints($f['tag_ids'] ?? [])) {
+            $where .= ' AND m.id IN (SELECT media_id FROM media_tag WHERE tag_id IN (' . $placeholders($tagIds) . '))';
+            array_push($params, ...$tagIds);
+        }
+
+        if ($genreIds = $ints($f['genre_ids'] ?? [])) {
+            $where .= ' AND m.id IN (SELECT media_id FROM media_genre WHERE genre_id IN (' . $placeholders($genreIds) . '))';
+            array_push($params, ...$genreIds);
+        }
+
+        if (!empty($f['list_id'])) {
+            $where .= ' AND m.id IN (SELECT media_id FROM user_list_media WHERE list_id = ?)';
+            $params[] = (int) $f['list_id'];
+        }
+
+        if (!empty($f['finished_year'])) {
+            $year = (int) $f['finished_year'];
+            $where .= ' AND (YEAR(m.finished_at) = ? OR m.id IN (SELECT media_id FROM rewatch_log WHERE YEAR(finished_at) = ?))';
+            array_push($params, $year, $year);
+        }
+
+        if (!empty($f['in_progress'])) {
+            $where .= " AND m.status IN ('Watching', 'Reading', 'Rewatching')";
+        }
+
+        if (!empty($f['exclude_adult'])) {
+            $where .= ' AND (r.name IS NULL OR r.name NOT IN (' . $placeholders(self::ADULT_RATINGS) . '))';
+            array_push($params, ...self::ADULT_RATINGS);
+        }
+
+        if (array_key_exists('ids', $f)) {
+            $ids = $ints($f['ids']) ?: [0];
+            $where .= ' AND m.id IN (' . $placeholders($ids) . ')';
+            array_push($params, ...$ids);
+        }
+
+        if ($exclude = $ints($f['exclude_ids'] ?? [])) {
+            $where .= ' AND m.id NOT IN (' . $placeholders($exclude) . ')';
+            array_push($params, ...$exclude);
         }
 
         return $where;

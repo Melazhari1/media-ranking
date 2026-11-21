@@ -107,6 +107,52 @@ php bin/console app:purge-deleted --older-than=30 --dry-run
 php bin/console app:purge-deleted --older-than=30       # asks for confirmation (or --force)
 ```
 
+### `app:reset-imported-ratings` (reversible)
+
+The legacy MAL importer copied the MAL score into "My Rating". This resets those copies to 0 on items
+**not in your list** (status empty), after writing every old value to `rating-reset-backup-*.csv`.
+In-list items with a rating equal to the MAL score are only listed in `ratings-equal-mal-in-list-*.csv`.
+
+```bash
+php bin/console app:reset-imported-ratings --dry-run
+php bin/console app:reset-imported-ratings
+php bin/console app:reset-imported-ratings --revert=var/reports/rating-reset-backup-YYYYMMDD-HHMMSS.csv
+```
+
+### `app:backfill-metadata`
+
+Re-matches items without an external id whose public score is missing, or whose poster is missing, tiny
+(< 4 KB), low-resolution (< 150 px wide) or from a watermarked stock site (`alamy`). Anime/manga categories
+search Jikan, TV Series/Documentary/Web Series search TMDB, Movie/unknown search both.
+
+- Confidence ≥ `--min-confidence` (default 0.9) → applied, **filling empty fields only** (poster only when
+  it has a quality problem). Status, my rating, notes and progress are never touched.
+- 0.5 – 0.9 → `metadata-review-*.csv`. Put `yes` in the `approve` column, then
+  `php bin/console app:backfill-metadata --apply-review=<file>`.
+- Below 0.5 / errors → `metadata-no-match-*.csv`.
+
+```bash
+php bin/console app:backfill-metadata --dry-run --limit=50   # sample run, writes reports only
+php bin/console app:backfill-metadata                         # resumable (var/checkpoints/)
+php bin/console app:backfill-metadata --ids=12,34 --include-matched
+```
+
+Jikan is limited to 3 requests/s and 60/min (enforced across processes), so ~10 000 candidates take ≈ 3 h.
+TMDB needs `TMDB_API_KEY` in `.env` (a v3 key or a v4 read token); it is only ever used server-side.
+
+### `app:import` / `app:export`
+
+```bash
+php bin/console app:import animelist.xml --dry-run     # MyAnimeList XML export (anime or manga, .xml or .xml.gz)
+php bin/console app:import diary.csv                   # Letterboxd: watched/ratings/diary/watchlist.csv
+php bin/console app:import mmr-export.json             # MMR's own JSON/CSV export
+php bin/console app:export --format=csv --in-list -o my-list.csv
+```
+
+Preview shows create / update / skip counts. Duplicates are detected by external id first, then
+title + year (title alone only when unambiguous), and repeated rows inside one file are skipped.
+Updates never blank out existing values and never overwrite existing notes.
+
 ## API changes
 
 | Request | Notes |
@@ -120,6 +166,26 @@ php bin/console app:purge-deleted --older-than=30       # asks for confirmation 
 | `POST api.php?action=update_tracking&id=N` | JSON with any of `progress_current`, `progress_total`, `progress_unit` (`episode`/`chapter`/`volume`/`page`), `started_at`, `finished_at` (`YYYY-MM-DD`), `rewatch_count`. Partial; validated (400 on error). Returns the updated row |
 | `GET api.php?order_by=m.year ASC\|DESC` | Now numeric via `release_year`; unknown years (`N/A`) last |
 | any write with an unknown `status` | 400 |
+| `GET ?action=lookup&q=…&type=anime\|manga\|movie\|tv\|screen\|all\|auto[&category=…]` | Auto-fill suggestions (Jikan/TMDB), cached 24 h server-side; `warnings` explains a missing TMDB key or a provider outage |
+| `GET ?action=lookup_details&source=mal_anime\|mal_manga\|tmdb_movie\|tmdb_tv&id=N` | Full metadata + matching `category_id` / `rating_id`; 502 when the provider is down |
+| `POST api.php[?id=N]` extras | `image_url` (poster from MAL/TMDB CDNs only), `external_source`, `external_id`, `synopsis`, `backdrop_url`, `genres` (array/JSON), `tags`, tracking fields |
+| `POST ?action=progress&id=N` `{by}` | +N progress; starts tracking (status → Watching/Reading, `started_at`). Returns `reached_total` |
+| `POST ?action=complete&id=N` `[{finished_at}]` | Watched/Read, progress = total, `finished_at`; completing a Rewatching item logs the rewatch |
+| `GET ?action=stats` | One aggregated dashboard payload, cached 10 min, invalidated by writes |
+| `GET ?action=recommendations[&rows=2&limit=12]` | "Because you liked X" rows |
+| `GET ?action=random&limit=N` + list filters | Random items respecting filters (`limit=1` = "pick one for me") |
+| `GET ?action=detail&id=N` | Item + genres, tags, lists, rewatch log, related titles |
+| `GET ?action=home_rows` | Continue watching, recently added, top rated, random picks |
+| `GET ?action=export&format=json\|csv[&scope=filtered&…filters]` | File download |
+| `POST ?action=import_preview` (multipart `file`) → `POST ?action=import_commit` `{token, create, update}` | Two-step import |
+
+List filters (list, random, export): `keyword`, `category_ids`, `rating_ids`, `statuses`, `tag_ids`,
+`genre_ids`, `list_id`, `finished_year`, `in_progress=1`, `exclude_adult=1`. New sort keys: `progress DESC|ASC`,
+`m.status ASC|DESC`, `category ASC|DESC`, `finished DESC`.
+
+Security changes: uploads are validated by content (JPEG/PNG/WebP/GIF only; previously any file type
+could be uploaded into `medias/`), the wildcard CORS header was removed, and server errors no longer
+leak SQL messages.
 
 Responses now include `public_score`, `score_source`, `sort_title`, `created_at`, `release_year`, the progress/date fields and external metadata; `GET ?id=N` also returns `synopsis` (`score_mal` is no longer returned).
 

@@ -2,10 +2,15 @@
 
 namespace App\Console;
 
+use App\Console\Command\BackfillMetadataCommand;
 use App\Console\Command\BackfillPublicScoresCommand;
+use App\Console\Command\ExportCommand;
+use App\Console\Command\ImportCommand;
 use App\Console\Command\NormalizeTitlesCommand;
 use App\Console\Command\PurgeDeletedCommand;
 use App\Console\Command\ReportUncategorizedCommand;
+use App\Console\Command\ResetImportedRatingsCommand;
+use App\Services;
 use Database;
 use Doctrine\DBAL\DriverManager;
 use Doctrine\Migrations\Configuration\Connection\ExistingConnection;
@@ -19,18 +24,23 @@ final class Application extends BaseApplication
 {
     private ?PDO $pdo = null;
 
-    public function __construct()
+    public function __construct(?Services $services = null)
     {
         parent::__construct('MMR console', '2.0');
 
-        $pdo = fn (): PDO => $this->pdo ??= Database::connect();
-        $varDir = dirname(__DIR__, 2) . '/var';
+        $services ??= new Services(null, dirname(__DIR__, 2));
+        $pdo = fn (): PDO => $this->pdo ??= $services->pdo();
+        $varDir = $services->varDir();
 
         $this->addCommands([
             new NormalizeTitlesCommand($pdo, $varDir),
             new ReportUncategorizedCommand($pdo, $varDir),
             new BackfillPublicScoresCommand($pdo, $varDir),
             new PurgeDeletedCommand($pdo),
+            new ResetImportedRatingsCommand($pdo, $varDir),
+            new BackfillMetadataCommand($services),
+            new ImportCommand($services),
+            new ExportCommand($services),
         ]);
 
         $this->addMigrationCommands();
