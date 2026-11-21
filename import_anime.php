@@ -1,7 +1,6 @@
 <?php
 // import_anime.php
-require_once 'Database.php';
-require_once 'MediaManager.php';
+require_once __DIR__ . '/bootstrap.php';
 
 $pdo = Database::connect();
 $mediaManager = new MediaManager($pdo);
@@ -114,11 +113,16 @@ if ($handle) {
 
         // Use default year if not in JSON
         $year = $data['year'] ?? date('Y');
-        $score = $scoreMal;
+        $score = 0; // my rating starts empty; the MAL score goes to public_score
 
         try {
-            if ($existingId) {
-                $existing = $mediaManager->getMediaById($existingId);
+            $existing = $existingId ? $mediaManager->getMediaById($existingId) : null;
+            if ($existingId && !$existing) {
+                echo "Skipped (soft-deleted): $title
+";
+                continue;
+            }
+            if ($existing) {
                 // Update media but keep existing status and user score
                 $mediaManager->updateMedia(
                     $existingId,
@@ -130,11 +134,12 @@ if ($handle) {
                     $existing['score'], // Keep existing score
                     $scoreMal,
                     $existing['status'], // Keep existing status
-                    $existing['infos']   // Keep existing infos
+                    $existing['infos'],  // Keep existing infos
+                    'mal'
                 );
                 echo "Updated: $title\n";
             } else {
-                $mediaManager->createMedia($title, $imageName, $categoryId, $ratingId, $year, $score, $scoreMal);
+                $mediaManager->createMedia($title, $imageName, $categoryId, $ratingId, $year, $score, $scoreMal, null, '', 'mal');
                 echo "Imported: $title\n";
             }
             $count++;

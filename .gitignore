@@ -1,6 +1,8 @@
 # Credentials & sensitive config
 config.php
 .htpasswd
+.env
+.env.local
 
 # Uploaded media files
 medias/
@@ -8,6 +10,15 @@ medias/
 # Large data/import files
 *.ndjson
 *.json
+# ...but keep tooling manifests
+!composer.json
+!package.json
+!package-lock.json
+
+# Dependencies & runtime output (reports, checkpoints, caches, backups)
+vendor/
+node_modules/
+var/
 
 # Claude Code
 .claude/
@@ -20,5 +31,4 @@ desktop.ini
 *.swo
 
 # PHP
-vendor/
 *.log

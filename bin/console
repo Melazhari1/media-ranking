@@ -1,0 +1,9 @@
+#!/usr/bin/env php
+<?php
+// MMR console. Usage: php bin/console list
+
+require dirname(__DIR__) . '/bootstrap.php';
+
+use App\Console\Application;
+
+exit((new Application())->run());

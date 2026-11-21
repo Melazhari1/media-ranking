@@ -5,9 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MMR - My Media Ranking</title>
-    <!-- Vue 3 CDN -->
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    <link rel="stylesheet" href="styles.css">
+    <!-- Vue 3 CDN (pinned production build, includes the in-DOM template compiler) -->
+    <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+    <link rel="stylesheet" href="styles.css?v=2.0.1">
 </head>
 
 <body id="app" v-cloak>
@@ -67,7 +67,7 @@
                     <option value="m.title ASC">Title (A-Z)</option>
                     <option value="m.title DESC">Title (Z-A)</option>
                     <option value="m.score DESC">My Rating (High-Low)</option>
-                    <option value="m.score_mal DESC">MAL Rating (High-Low)</option>
+                    <option value="m.public_score DESC">Public Score (High-Low)</option>
                     <option value="m.year DESC">Year (Newest)</option>
                     <option value="m.year ASC">Year (Oldest)</option>
                 </select>
@@ -137,7 +137,7 @@
                 <div v-for="item in items" :key="item.id" class="card" @click="toggleWatchStatus(item)">
                     <div class="tag-status"
                         :class="item.status ? (['Watched','Read'].includes(item.status) ? 'watched' : 'plan') : 'none'">
-                        {{ item.status ?? '+ Add' }}
+                        {{ item.status || '+ Add' }}
                     </div>
                     <div class="card-image-wrapper">
                         <div class="tag-rating" v-if="item.ratings">
@@ -175,14 +175,14 @@
                             <div class="card-title" :title="item.title">{{ item.title }}</div>
                             <div class="card-meta">
                                 <div class="score-container" style="align-items: center; flex-wrap: wrap;">
-                                    <div class="tag-list" v-if="item.categories"
-                                        style="margin-top: 0; display: inline-flex;">
-                                        <span class="tag" v-for="cat in (item.categories || '').split(',')" :key="cat">
+                                    <div class="tag-list" style="margin-top: 0; display: inline-flex;">
+                                        <span class="tag" v-for="cat in categoryName(item).split(',')" :key="cat">
                                             {{ cat.trim() }}
                                         </span>
                                     </div>
                                     <span class="year-label">{{ item.year }}</span>
-                                    <div class="rating mal" title="MAL Score">MAL: {{ item.score_mal }} ★</div>
+                                    <div class="rating mal" :class="{ 'no-score': formatPublicScore(item) === '—' }"
+                                        :title="publicScoreTitle(item)">{{ formatPublicScore(item) }}</div>
                                 </div>
                                 <div class="score-container">
                                     <div class="score-range-group">
@@ -198,7 +198,7 @@
                             <div class="card-actions" style="margin-top: 10px;">
                                 <button class="btn-info" @click.stop="openInfoModal(item)">Infos</button>
                                 <button class="btn-edit" @click.stop="openMediaModal(item)">Edit</button>
-                                <button class="btn-delete" @click.stop="deleteMedia(item.id)">Delete</button>
+                                <button class="btn-delete" @click.stop="deleteMedia(item)">Delete</button>
                             </div>
                         </div>
                     </div>
@@ -206,24 +206,26 @@
             </div>
 
             <!-- Pagination -->
-            <div v-if="totalPages > 1" class="pagination">
+            <nav v-if="totalPages > 1" class="pagination" aria-label="Pagination">
                 <button class="page-link" :disabled="currentPage === 1" @click="changePage(currentPage - 1)">
                     &laquo; Previous
                 </button>
 
                 <div class="page-numbers">
-                    <button v-for="page in totalPages" :key="page" class="page-link"
-                        :class="{ active: page === currentPage }" @click="changePage(page)"
-                        v-show="page === 1 || page === totalPages || Math.abs(page - currentPage) <= 2">
-                        {{ page }}
-                    </button>
-                    <span v-if="totalPages > 7" class="page-ellipsis">...</span>
+                    <template v-for="p in pages" :key="p.key">
+                        <span v-if="p.type === 'ellipsis'" class="page-ellipsis" aria-hidden="true">…</span>
+                        <button v-else class="page-link" :class="{ active: p.page === currentPage }"
+                            :aria-current="p.page === currentPage ? 'page' : null" :aria-label="'Page ' + p.page"
+                            @click="changePage(p.page)">
+                            {{ p.page }}
+                        </button>
+                    </template>
                 </div>
 
                 <button class="page-link" :disabled="currentPage === totalPages" @click="changePage(currentPage + 1)">
                     Next &raquo;
                 </button>
-            </div>
+            </nav>
 
             <div v-if="!loading && items.length === 0"
                 style="text-align: center; padding: 3rem; color: var(--text-muted);">
@@ -279,8 +281,15 @@
                                 <input type="number" v-model.number="mediaForm.score" step="0.1" min="0" max="10">
                             </div>
                             <div class="form-group">
-                                <label>MAL Score (0-10)</label>
-                                <input type="number" v-model.number="mediaForm.score_mal" step="0.1" min="0" max="10">
+                                <label>Public Score (0-10)</label>
+                                <div class="input-with-select">
+                                    <input type="number" v-model.number="mediaForm.public_score" step="0.01" min="0"
+                                        max="10" placeholder="—">
+                                    <select v-model="mediaForm.score_source" aria-label="Score source">
+                                        <option v-for="src in scoreSources" :key="src.value" :value="src.value">
+                                            {{ src.label }}</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
 
@@ -340,9 +349,42 @@
                 </div>
             </div>
         </div>
+
+        <!-- Confirm dialog -->
+        <div v-if="confirmDialog" class="modal-overlay" @click.self="closeConfirm">
+            <div class="modal-content confirm-dialog" role="alertdialog" aria-modal="true"
+                aria-labelledby="confirm-title" aria-describedby="confirm-message">
+                <div class="modal-header">
+                    <h3 id="confirm-title">{{ confirmDialog.title }}</h3>
+                    <button class="close-btn" @click="closeConfirm" aria-label="Close">×</button>
+                </div>
+                <div class="modal-body">
+                    <p id="confirm-message">{{ confirmDialog.message }}</p>
+                </div>
+                <div class="modal-footer">
+                    <button ref="confirmCancelBtn" class="btn-cancel" @click="closeConfirm"
+                        :disabled="confirmBusy">Cancel</button>
+                    <button :class="confirmDialog.danger ? 'btn-danger' : 'btn-save'" @click="runConfirm"
+                        :disabled="confirmBusy">
+                        {{ confirmBusy ? 'Working…' : confirmDialog.confirmLabel }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast -->
+        <div class="toast-region" role="status" aria-live="polite">
+            <div v-if="toast" class="toast" @mouseenter="pauseToast" @mouseleave="resumeToast"
+                @focusin="pauseToast" @focusout="resumeToast">
+                <span class="toast-message">{{ toast.message }}</span>
+                <button v-if="toast.action" class="toast-action" @click="runToastAction">{{ toast.action.label }}</button>
+                <button class="toast-close" @click="dismissToast" aria-label="Dismiss">×</button>
+            </div>
+        </div>
     </div>
 
-    <script src="app.js"></script>
+    <!-- Bump ?v= on every deploy so browsers fetch the new files -->
+    <script type="module" src="app.js?v=2.0.1"></script>
 </body>
 
 </html>

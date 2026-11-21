@@ -9,8 +9,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require_once 'Database.php';
-require_once 'MediaManager.php';
+require_once __DIR__ . '/bootstrap.php';
 
 $pdo     = Database::connect();
 $manager = new MediaManager($pdo);
@@ -119,6 +118,21 @@ function handlePost($manager, $action, $id)
         return;
     }
 
+    if ($action === 'restore') {
+        if ($id === null) {
+            http_response_code(400);
+            echo json_encode(["status" => "error", "message" => "ID is required"]);
+            return;
+        }
+        if (!$manager->restoreMedia($id)) {
+            http_response_code(404);
+            echo json_encode(["status" => "error", "message" => "Nothing to restore"]);
+            return;
+        }
+        echo json_encode(["status" => "success", "message" => "Media restored"]);
+        return;
+    }
+
     // Dedicated action for saving the infos/notes field only — avoids
     // accidentally overwriting category/rating when only notes are edited.
     if ($action === 'update_infos') {
@@ -157,17 +171,25 @@ function handlePost($manager, $action, $id)
     $categoryId = resolveId($data, 'category_id', 'category_ids');
     $ratingId   = resolveId($data, 'rating_id',   'rating_ids');
 
-    $year     = !empty($data['year'])     ? $data['year']          : date('Y');
-    $score    = isset($data['score'])     ? (float) $data['score']     : 0.0;
-    $scoreMal = isset($data['score_mal']) ? (float) $data['score_mal'] : 0.0;
-    $status   = sanitizeStatus($data['status'] ?? null);
-    $infos    = $data['infos'] ?? '';
+    $year   = !empty($data['year'])  ? $data['year']           : date('Y');
+    $score  = isset($data['score'])  ? (float) $data['score']  : 0.0;
+    $status = sanitizeStatus($data['status'] ?? null);
+    $infos  = $data['infos'] ?? '';
+
+    // public_score replaces score_mal; the legacy field is still accepted (as a MAL score).
+    if (array_key_exists('public_score', $data)) {
+        $publicScore = $data['public_score'];
+        $scoreSource = $data['score_source'] ?? 'manual';
+    } else {
+        $publicScore = $data['score_mal'] ?? null;
+        $scoreSource = 'mal';
+    }
 
     if ($id !== null) {
-        $manager->updateMedia($id, $data['title'], $imageName, $categoryId, $ratingId, $year, $score, $scoreMal, $status, $infos);
+        $manager->updateMedia($id, $data['title'], $imageName, $categoryId, $ratingId, $year, $score, $publicScore, $status, $infos, $scoreSource);
         echo json_encode(["status" => "success", "message" => "Media updated"]);
     } else {
-        $newId = $manager->createMedia($data['title'], $imageName, $categoryId, $ratingId, $year, $score, $scoreMal, $status, $infos);
+        $newId = $manager->createMedia($data['title'], $imageName, $categoryId, $ratingId, $year, $score, $publicScore, $status, $infos, $scoreSource);
         echo json_encode(["status" => "success", "message" => "Media created", "id" => $newId]);
     }
 }
@@ -181,8 +203,13 @@ function handleDelete($manager, $id)
         echo json_encode(["status" => "error", "message" => "ID is required for deletion"]);
         return;
     }
-    $manager->deleteMedia($id);
-    echo json_encode(["status" => "success", "message" => "Media deleted"]);
+    if (!$manager->deleteMedia($id)) {
+        http_response_code(404);
+        echo json_encode(["status" => "error", "message" => "Media not found"]);
+        return;
+    }
+    // Soft delete: POST api.php?action=restore&id=… undoes it.
+    echo json_encode(["status" => "success", "message" => "Media deleted", "undo" => "restore"]);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

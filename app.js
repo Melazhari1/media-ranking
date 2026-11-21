@@ -1,4 +1,7 @@
-const { createApp, ref, onMounted, computed, watch } = Vue;
+import { paginationItems } from './js/pagination.js?v=2.0.1';
+import { formatPublicScore, publicScoreTitle, categoryName, SCORE_SOURCES } from './js/format.js?v=2.0.1';
+
+const { createApp, ref, onMounted, onBeforeUnmount, computed, watch, nextTick } = Vue;
 
 createApp({
     setup() {
@@ -36,6 +39,7 @@ createApp({
         const pageSize     = ref(20);
         const totalItems   = ref(0);
         const totalPages   = ref(0);
+        const pages        = computed(() => paginationItems(currentPage.value, totalPages.value));
 
         // Info modal
         const showInfoModal  = ref(false);
@@ -53,9 +57,10 @@ createApp({
             title:       '',
             image:       '',
             year:        String(new Date().getFullYear()),
-            score:       0,
-            score_mal:   0,
-            status:      null,
+            score:        0,
+            public_score: null,
+            score_source: 'manual',
+            status:       null,
             infos:       '',
             category_id: null,
             rating_id:   null,
@@ -316,7 +321,8 @@ createApp({
                             image:       d.image,
                             year:        d.year,
                             score:       parseFloat(d.score)     || 0,
-                            score_mal:   parseFloat(d.score_mal) || 0,
+                            public_score: d.public_score !== null && d.public_score !== undefined ? Number(d.public_score) : null,
+                            score_source: d.score_source || 'manual',
                             status:      d.status,
                             infos:       d.infos,
                             category_id: d.category_id ? Number(d.category_id) : null,
@@ -337,9 +343,10 @@ createApp({
                     title:       '',
                     image:       '',
                     year:        String(new Date().getFullYear()),
-                    score:       0,
-                    score_mal:   0,
-                    status:      null,
+                    score:        0,
+                    public_score: null,
+                    score_source: 'manual',
+                    status:       null,
                     infos:       '',
                     category_id: null,
                     rating_id:   null,
@@ -377,7 +384,9 @@ createApp({
                 formData.append('title',        mediaForm.value.title.trim());
                 formData.append('year',         mediaForm.value.year);
                 formData.append('score',        mediaForm.value.score);
-                formData.append('score_mal',    mediaForm.value.score_mal);
+                const ps = mediaForm.value.public_score;
+                formData.append('public_score', ps === null || ps === '' || Number(ps) <= 0 ? '' : ps);
+                formData.append('score_source', mediaForm.value.score_source || 'manual');
                 // Send empty string for null status; PHP converts it back to NULL
                 formData.append('status',       mediaForm.value.status ?? '');
                 formData.append('infos',        mediaForm.value.infos ?? '');
@@ -409,19 +418,106 @@ createApp({
 
         // ─── Delete ──────────────────────────────────────────────────────────
 
-        const deleteMedia = async (id) => {
-            if (!confirm('Are you sure you want to delete this media?')) return;
+        // Generic confirmation dialog: { title, message, confirmLabel, danger, onConfirm }
+        const confirmDialog    = ref(null);
+        const confirmBusy      = ref(false);
+        const confirmCancelBtn = ref(null);
+
+        const openConfirm = (options) => {
+            confirmDialog.value = options;
+            nextTick(() => confirmCancelBtn.value?.focus()); // safe default focus
+        };
+        const closeConfirm = () => {
+            if (!confirmBusy.value) confirmDialog.value = null;
+        };
+        const runConfirm = async () => {
+            if (!confirmDialog.value) return;
+            confirmBusy.value = true;
             try {
-                const response = await fetch(`api.php?id=${id}`, { method: 'DELETE' });
+                await confirmDialog.value.onConfirm();
+            } finally {
+                confirmBusy.value  = false;
+                confirmDialog.value = null;
+            }
+        };
+
+        // Toast with optional action (Undo)
+        const toast = ref(null);
+        let toastTimer = null;
+        const showToast = (message, action = null, duration = 8000) => {
+            clearTimeout(toastTimer);
+            toast.value = { message, action, duration };
+            toastTimer  = setTimeout(() => { toast.value = null; }, duration);
+        };
+        // Hovering or focusing the toast pauses auto-dismiss so Undo stays reachable.
+        const pauseToast  = () => clearTimeout(toastTimer);
+        const resumeToast = () => {
+            if (!toast.value) return;
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { toast.value = null; }, 3000);
+        };
+        const dismissToast = () => {
+            clearTimeout(toastTimer);
+            toast.value = null;
+        };
+        const runToastAction = async () => {
+            const action = toast.value?.action;
+            dismissToast();
+            if (action) await action.run();
+        };
+
+        // Re-fetch the current page; step back if it became empty (e.g. last item of last page deleted).
+        const refreshCurrentPage = async () => {
+            await fetchMedia(currentPage.value);
+            if (items.value.length === 0 && currentPage.value > 1) {
+                await fetchMedia(Math.max(1, totalPages.value));
+            }
+        };
+
+        const restoreMedia = async (item) => {
+            try {
+                const response = await fetch(`api.php?action=restore&id=${item.id}`, { method: 'POST' });
                 const result   = await response.json();
                 if (result.status === 'success') {
-                    fetchMedia(currentPage.value);
+                    showToast(`Restored "${item.title}"`, null, 3000);
+                    refreshCurrentPage();
                 } else {
-                    alert('Error: ' + result.message);
+                    showToast('Could not restore: ' + result.message);
                 }
             } catch (error) {
-                console.error('Error deleting media:', error);
+                console.error('Error restoring media:', error);
+                showToast('Could not restore — network error.');
             }
+        };
+
+        const deleteMedia = (item) => {
+            openConfirm({
+                title:        'Delete media?',
+                message:      `"${item.title}" will be removed from your list. You can undo this right after.`,
+                confirmLabel: 'Delete',
+                danger:       true,
+                onConfirm: async () => {
+                    try {
+                        const response = await fetch(`api.php?id=${item.id}`, { method: 'DELETE' });
+                        const result   = await response.json();
+                        if (result.status === 'success') {
+                            items.value = items.value.filter(i => i.id !== item.id);
+                            totalItems.value = Math.max(0, totalItems.value - 1);
+                            showToast(`Deleted "${item.title}"`, { label: 'Undo', run: () => restoreMedia(item) });
+                            refreshCurrentPage();
+                        } else {
+                            showToast('Error: ' + result.message);
+                        }
+                    } catch (error) {
+                        console.error('Error deleting media:', error);
+                        showToast('Could not delete — network error.');
+                    }
+                },
+            });
+        };
+
+        const onKeydown = (e) => {
+            if (e.key === 'Escape' && confirmDialog.value) closeConfirm();
         };
 
         // Category-aware status labels for the Add/Edit modal
@@ -449,10 +545,13 @@ createApp({
         // ─── Init ────────────────────────────────────────────────────────────
 
         onMounted(() => {
+            window.addEventListener('keydown', onKeydown);
             applyTheme();
             fetchMedia();
             fetchFilters();
         });
+
+        onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
         // ─── Expose to template ──────────────────────────────────────────────
 
@@ -465,7 +564,12 @@ createApp({
             ratingLabel, categoryLabel, statusLabel, openFilterGroup, toggleFilterGroup,
             isHentai, isImageHidden, toggleReveal,
             // Pagination
-            changePage,
+            changePage, pages,
+            // Formatting
+            formatPublicScore, publicScoreTitle, categoryName, scoreSources: SCORE_SOURCES,
+            // Confirm dialog & toast
+            confirmDialog, confirmBusy, confirmCancelBtn, closeConfirm, runConfirm,
+            toast, dismissToast, runToastAction, pauseToast, resumeToast,
             // Actions
             fetchMedia, fetchRandomMedia, resetFilters,
             toggleWatchStatus, updateScore, deleteMedia,

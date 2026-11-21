@@ -1066,3 +1066,136 @@ main {
         gap: 1.5rem;
     }
 }
+/* --- PUBLIC SCORE --- */
+.rating.mal.no-score {
+    color: var(--text-muted);
+    background: var(--bg-input);
+}
+
+.input-with-select {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.input-with-select input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.input-with-select select {
+    flex: 0 0 auto;
+    width: auto;
+}
+
+/* --- CONFIRM DIALOG --- */
+.confirm-dialog {
+    max-width: 440px;
+}
+
+.confirm-dialog .modal-body p {
+    color: var(--text-main);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.btn-danger {
+    background: #dc2626;
+    color: #fff;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 10px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.btn-danger:hover {
+    background: #b91c1c;
+}
+
+.btn-danger:disabled,
+.btn-cancel:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.btn-danger:focus-visible,
+.btn-cancel:focus-visible,
+.btn-save:focus-visible,
+.page-link:focus-visible,
+.toast button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* --- TOAST --- */
+.toast-region {
+    position: fixed;
+    left: 50%;
+    bottom: 1.5rem;
+    transform: translateX(-50%);
+    z-index: 2000;
+    width: max-content;
+    max-width: calc(100vw - 32px);
+    pointer-events: none;
+}
+
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 0.75rem 0.75rem 1rem;
+    background: #10131f;
+    color: #eef1fa;
+    border: 1px solid #2b3346;
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    pointer-events: auto;
+    animation: toast-in 0.2s ease-out;
+}
+
+.dark-theme .toast {
+    background: #eef1fa;
+    color: #10131f;
+    border-color: #e2e6f0;
+}
+
+.toast-message {
+    font-size: 0.9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.toast-action {
+    background: transparent;
+    border: none;
+    color: #3ee6ff;
+    font-weight: 700;
+    cursor: pointer;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+
+.dark-theme .toast-action {
+    color: #0e7490;
+}
+
+.toast-close {
+    background: transparent;
+    border: none;
+    color: inherit;
+    opacity: 0.7;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0.25rem 0.4rem;
+    flex-shrink: 0;
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
