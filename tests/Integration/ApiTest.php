@@ -263,6 +263,76 @@ final class ApiTest extends DatabaseTestCase
         self::assertSame(0, (int) self::$pdo->query('SELECT COUNT(*) FROM media')->fetchColumn());
     }
 
+    public function testBatchListsTagsAndRewatchEndpoints(): void
+    {
+        $a = $this->insertRaw(['title' => 'Bulk A']);
+        $b = $this->insertRaw(['title' => 'Bulk B']);
+
+        [$code, $res] = $this->request('POST', '?action=batch', ['ids' => [$a, $b], 'op' => 'set_status', 'value' => 'Dropped']);
+        self::assertSame(200, $code);
+        self::assertSame(2, $res['data']['affected']);
+        [$code] = $this->request('POST', '?action=batch', ['ids' => [], 'op' => 'delete']);
+        self::assertSame(400, $code);
+
+        [, $list] = $this->request('POST', '?action=list_create', ['name' => 'Weekend']);
+        $listId = $list['data']['id'];
+        [, $res] = $this->request('POST', '?action=batch', ['ids' => [$a, $b], 'op' => 'add_to_list', 'value' => $listId]);
+        self::assertSame(2, $res['data']['affected']);
+        [, $res] = $this->request('GET', '?action=lists');
+        self::assertSame(2, $res['data'][0]['media_count']);
+        [, $res] = $this->request('GET', '?list_id=' . $listId . '&order_by=list_position');
+        self::assertSame(['Bulk A', 'Bulk B'], array_column($res['data'], 'title'));
+
+        [, $res] = $this->request('POST', '?action=batch', ['ids' => [$a], 'op' => 'add_tags', 'value' => ['Cozy']]);
+        [$code, $res] = $this->request('POST', "?action=media_tags&id=$b", ['tags' => ['Cozy', 'Short']]);
+        self::assertSame(200, $code);
+        self::assertSame(['Cozy', 'Short'], array_column($res['data'], 'name'));
+        [, $res] = $this->request('GET', '?action=tags&q=co');
+        self::assertSame(2, (int) $res['data'][0]['media_count']);
+
+        [$code, $res] = $this->request('POST', "?action=log_rewatch&id=$a", ['finished_at' => '2026-01-02', 'notes' => 'again']);
+        self::assertSame(200, $code);
+        self::assertSame(1, (int) $res['data']['rewatch_count']);
+        [, $res] = $this->request('GET', '?action=diary&year=2026');
+        self::assertSame('rewatch', $res['data']['entries'][0]['kind']);
+
+        [, $res] = $this->request('POST', '?action=batch', ['ids' => [$a, $b], 'op' => 'delete']);
+        self::assertSame(2, $res['data']['affected']);
+        [, $res] = $this->request('POST', '?action=batch', ['ids' => [$a, $b], 'op' => 'restore']);
+        self::assertSame(2, $res['data']['affected']);
+    }
+
+    public function testSettingsAndPublicProfilePage(): void
+    {
+        self::$pdo->exec('TRUNCATE TABLE settings');
+        $fav = $this->insertRaw(['title' => 'Public fav', 'status' => 'Watched', 'score' => 9, 'infos' => 'hidden note', 'image' => 'nope.jpg']);
+        $hidden = $this->insertRaw(['title' => 'Not shown', 'status' => 'Plan to Watch']);
+
+        $ctx = stream_context_create(['http' => ['ignore_errors' => true]]);
+        $url = 'http://127.0.0.1:' . self::$port . '/public.php?u=fan_1';
+        file_get_contents($url, false, $ctx);
+        self::assertStringContainsString('404', $http_response_header[0], 'profile disabled by default');
+
+        [$code] = $this->request('POST', '?action=settings_save', ['public_enabled' => true]);
+        self::assertSame(400, $code, 'username required');
+        [$code, $res] = $this->request('POST', '?action=settings_save', ['public_enabled' => true, 'username' => 'fan_1', 'display_name' => '<b>Fan</b>']);
+        self::assertSame(200, $code);
+
+        $html = file_get_contents($url, false, $ctx);
+        self::assertStringContainsString('200', $http_response_header[0]);
+        self::assertStringContainsString('Public fav', $html);
+        self::assertStringNotContainsString('hidden note', $html);
+        self::assertStringNotContainsString('<b>Fan</b>', $html, 'escaped');
+        self::assertStringContainsString('&lt;b&gt;Fan&lt;/b&gt;', $html);
+        self::assertStringContainsString('og.png', $html);
+
+        file_get_contents($url . '&poster=' . $hidden, false, $ctx);
+        self::assertStringContainsString('404', $http_response_header[0], 'posters of items not on the profile are never served');
+
+        $png = file_get_contents('http://127.0.0.1:' . self::$port . '/og.php?u=fan_1', false, $ctx);
+        self::assertSame(IMAGETYPE_PNG, getimagesizefromstring($png)[2]);
+    }
+
     public function testUnknownEndpointIs404(): void
     {
         [$code] = $this->request('GET', '?action=nope');

@@ -40,6 +40,7 @@ Every schema change is a reversible migration in `migrations/`.
 | `Version20261121000004` | `tags`, `media_tag` | Drops tags |
 | `Version20261121000005` | `user_lists`, `user_list_media` (ordered) | Drops lists |
 | `Version20261121000006` | Indexes on `status`, `category_id`, `rating_id`, `created_at` | Indexes only |
+| `Version20261121000007` | `settings` (public profile options) | Drops settings (profile turns off) |
 
 Join tables cascade on a **hard** delete of a media row (`app:purge-deleted`); a soft delete keeps
 them, so Undo restores tags/lists/genres too.
@@ -188,6 +189,83 @@ could be uploaded into `medias/`), the wildcard CORS header was removed, and ser
 leak SQL messages.
 
 Responses now include `public_score`, `score_source`, `sort_title`, `created_at`, `release_year`, the progress/date fields and external metadata; `GET ?id=N` also returns `synopsis` (`score_mal` is no longer returned).
+
+Phase 4 endpoints:
+
+| Request | Notes |
+|---|---|
+| `POST ?action=batch` `{ids, op, value}` | One endpoint for bulk actions: `set_status` (wording adapted per category), `set_category`, `set_rating`, `add_to_list`, `add_tags`, `delete` (soft), `restore`. Max 1000 ids, transactional |
+| `GET ?action=lists` · `POST list_create {name, description?, is_public?}` · `list_update&id` · `list_delete&id` · `list_reorder {ids}` | Custom lists |
+| `POST list_add_items&id {media_ids}` · `list_remove_item&id {media_id}` · `list_reorder_items&id {media_ids}` | List contents (ordered) |
+| `GET ?action=tags[&q=…]` · `POST ?action=media_tags&id=N {tags: [...]}` | Tag autocomplete / replace an item's tags |
+| `GET ?action=diary&year=YYYY\|all` | Finished items + logged rewatches, newest first |
+| `POST ?action=log_rewatch&id=N {started_at?, finished_at?, notes?}` | Adds history, increments `rewatch_count` |
+| `GET ?action=settings` · `POST ?action=settings_save` | Public profile options |
+
+## Frontend
+
+Vue 3 + Vue Router from the CDN, ES modules, **no build step** (deploy = upload files).
+
+```
+index.php            app shell: <base href>, theme before first paint, per-route <title>/meta/Open Graph
+app.js               router + header + global modals
+js/api.js            fetch wrapper      js/store.js   prefs (localStorage), lookups, filters, toast/confirm
+js/status.js         status groups + category wording      js/format.js  scores, progress, slugs
+js/actions.js        +1 progress / complete / delete-with-undo shared by cards, table and detail page
+js/components/       common (badge, pagination, modal, toast), cards (grid card, table, carousel),
+                     forms (Add/Edit with auto-fill, tag input), modals (import/export, pick one, add to list),
+                     bulk (selection bar), settings
+js/views/            Home, Detail (/media/:id-slug), Stats, Diary, Lists
+```
+
+Routes: `/` (filters are kept in the URL: `?q=&cat=&status=&tag=&list=&finished=&sort=&page=`), `/media/12-slug`,
+`/stats`, `/diary`, `/lists`, and the public `/u/{username}`. `.htaccess` rewrites unknown paths to `index.php`.
+
+**Every deploy:** bump the asset version in `index.php` (`ASSET_VERSION`) **and** every `?v=` in the JS imports
+(they must all match, otherwise a module loads twice with separate state):
+
+```bash
+grep -rl "v=2.1.0" app.js js index.php | xargs sed -i "s/v=2\.1\.0/v=2.1.1/g"
+```
+
+UI preferences in `localStorage`: `theme`, `mmr.viewMode` (grid/list), `mmr.pageSize`, `mmr.collapsedRows`.
+
+Status colours (badges, filters, stats) are CSS tokens `--st-plan|active|done|on_hold|dropped|rewatching`
+with separate light/dark values, checked for colour-blind separation and contrast. Text never relies on
+colour alone: badges show a coloured dot next to the label.
+
+## Public profile (opt-in)
+
+Settings (gear icon) → enable, choose a username. `/u/{username}` is server-rendered by `public.php`, shows stats,
+your top 10 and lists marked public, never your notes or adult (Rx) items unless you tick those options.
+`/u/{username}/og.png` (`og.php`) is a 1200×630 Open Graph card with your top posters, cached for an hour.
+Set `OG_FONT=/path/to/font.ttf` in `.env` if the server has no DejaVu/Liberation font (a built-in fallback is used otherwise).
+
+If the site is protected with basic auth, keep the app private but let the profile through — in the
+production `.htaccess` (Apache 2.4; adjust the path prefix if MMR is installed in a sub-folder):
+
+```apache
+AuthType Basic
+AuthName "MMR"
+AuthUserFile /home/YOUR_USER/path/to/.htpasswd
+<RequireAny>
+    Require valid-user
+    Require expr "%{THE_REQUEST} =~ m#^GET\s+/u/[A-Za-z0-9_-]{3,30}(/og\.png)?/?\s#"
+    Require expr "%{THE_REQUEST} =~ m#^GET\s+/public\.php\?u=[A-Za-z0-9_-]{3,30}&poster=\d+\s#"
+</RequireAny>
+```
+
+Then check from a private window: `/u/name` loads, `/` and `/api.php` still ask for the password.
+
+## Deploying an update
+
+1. `mysqldump --single-transaction DB > backup.sql`
+2. Upload the files (keep your production `.htaccess` auth lines — merge, don't overwrite), then
+   `composer install --no-dev --optimize-autoloader`
+3. `php bin/console migrations:status` → `php bin/console migrations:migrate`
+4. Data commands, always `--dry-run` first: `app:backfill-public-scores`, `app:normalize-titles`,
+   `app:reset-imported-ratings`, `app:backfill-metadata`
+5. Bump the asset version (see Frontend) so browsers load the new JS/CSS.
 
 ## Tests & lint
 

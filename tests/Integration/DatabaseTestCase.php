@@ -15,7 +15,7 @@ abstract class DatabaseTestCase extends TestCase
     {
         self::$pdo ??= Database::connect();
         self::$pdo->exec('SET FOREIGN_KEY_CHECKS = 0');
-        foreach (['media_genre', 'media_tag', 'user_list_media', 'rewatch_log', 'genres', 'tags', 'user_lists', 'media', 'categories', 'ratings'] as $table) {
+        foreach (['media_genre', 'media_tag', 'user_list_media', 'rewatch_log', 'genres', 'tags', 'user_lists', 'settings', 'media', 'categories', 'ratings'] as $table) {
             self::$pdo->exec("TRUNCATE TABLE $table");
         }
         self::$pdo->exec('SET FOREIGN_KEY_CHECKS = 1');

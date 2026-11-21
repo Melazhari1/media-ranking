@@ -8,7 +8,7 @@ export default [
         languageOptions: {
             ecmaVersion: 2022,
             sourceType: 'module',
-            globals: { ...globals.browser, Vue: 'readonly' },
+            globals: { ...globals.browser, Vue: 'readonly', VueRouter: 'readonly' },
         },
     },
     {

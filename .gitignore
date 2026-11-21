@@ -4,8 +4,9 @@ config.php
 .env
 .env.local
 
-# Uploaded media files
-medias/
+# Uploaded media files (keep the folder's .htaccess)
+medias/*
+!medias/.htaccess
 
 # Large data/import files
 *.ndjson

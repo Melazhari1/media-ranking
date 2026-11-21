@@ -1,586 +1,121 @@
-import { paginationItems } from './js/pagination.js?v=2.0.1';
-import { formatPublicScore, publicScoreTitle, categoryName, SCORE_SOURCES } from './js/format.js?v=2.0.1';
+// MMR — root app: router, header, global modals.
+// Internal modules are imported with the same ?v= everywhere (one instance each); bump it on deploy.
+import { Icon, ConfirmHost, ToastHost } from './js/components/common.js?v=2.1.0';
+import { MediaFormModal } from './js/components/forms.js?v=2.1.0';
+import { ImportExportModal, PickOneModal, AddToListModal } from './js/components/modals.js?v=2.1.0';
+import { SettingsModal } from './js/components/settings.js?v=2.1.0';
+import { HomeView } from './js/views/HomeView.js?v=2.1.0';
+import { DetailView } from './js/views/DetailView.js?v=2.1.0';
+import { StatsView } from './js/views/StatsView.js?v=2.1.0';
+import { DiaryView } from './js/views/DiaryView.js?v=2.1.0';
+import { ListsView } from './js/views/ListsView.js?v=2.1.0';
+import { prefs, filters, modals, ui, openForm, loadLookups, showToast, mediaVersion } from './js/store.js?v=2.1.0';
+import { mediaPath } from './js/format.js?v=2.1.0';
 
-const { createApp, ref, onMounted, onBeforeUnmount, computed, watch, nextTick } = Vue;
+const { createApp, ref, watch } = Vue;
+const { createRouter, createWebHistory } = VueRouter;
 
-createApp({
+// <base href> is set by index.php to the install directory ("/" in production, "/hostinger/mediarank/" locally).
+const basePath = new URL(document.baseURI).pathname;
+
+const router = createRouter({
+    history: createWebHistory(basePath),
+    routes: [
+        { path: '/', name: 'home', component: HomeView },
+        { path: '/media/:ref', name: 'media', component: DetailView },
+        { path: '/stats', name: 'stats', component: StatsView },
+        { path: '/diary', name: 'diary', component: DiaryView },
+        { path: '/lists', name: 'lists', component: ListsView },
+        { path: '/index.html', redirect: '/' },
+        { path: '/index.php', redirect: '/' },
+        { path: '/:pathMatch(.*)*', redirect: '/' },
+    ],
+    scrollBehavior: (to, from, saved) => saved || (to.path !== from.path ? { top: 0 } : undefined),
+});
+
+router.afterEach((to) => {
+    ui.sidebarOpen = false;
+    if (to.name === 'home') document.title = 'MMR - My Media Ranking';
+});
+
+const App = {
+    components: { Icon, ConfirmHost, ToastHost, MediaFormModal, ImportExportModal, PickOneModal, AddToListModal, SettingsModal },
     setup() {
-
-        // ─── State ───────────────────────────────────────────────────────────
-
-        const items          = ref([]);
-        const categories     = ref([]);
-        const ratings        = ref([]);
-        const searchQuery    = ref('');
-        const selectedGenres   = ref([]);
-        const selectedStatuses = ref([]);
-        const selectedRatings  = ref([]);
-        const orderBy        = ref('m.created_at DESC');
-        const loading        = ref(false);
-        const isSidebarOpen  = ref(false);
-        const isDarkMode     = ref(localStorage.getItem('theme') === 'dark');
-
-        // Filter dropdowns (accordion-style: opening one closes the others)
-        const openFilterGroup = ref(null); // 'ratings' | 'categories' | 'status' | null
-        const toggleFilterGroup = (group) => {
-            openFilterGroup.value = openFilterGroup.value === group ? null : group;
-        };
-
-        // Hentai-rated cover images are blurred until the user clicks the eye icon.
-        const revealedMedia = ref({});
-        const isHentai   = (item) => (item.rating_label || '').toLowerCase() === 'hentai';
-        const isRevealed = (item) => !!revealedMedia.value[item.id];
-        const isImageHidden = (item) => isHentai(item) && !isRevealed(item);
-        const toggleReveal = (item) => {
-            revealedMedia.value[item.id] = !isRevealed(item);
-        };
-
-        const currentPage  = ref(1);
-        const pageSize     = ref(20);
-        const totalItems   = ref(0);
-        const totalPages   = ref(0);
-        const pages        = computed(() => paginationItems(currentPage.value, totalPages.value));
-
-        // Info modal
-        const showInfoModal  = ref(false);
-        const selectedMedia  = ref(null);
-        const isSavingInfo   = ref(false);
-
-        // Add/Edit modal
-        const showMediaModal = ref(false);
-        const isSavingMedia  = ref(false);
-        const selectedFile   = ref(null);
-        const imagePreview   = ref(null);
-
-        const mediaForm = ref({
-            id:          null,
-            title:       '',
-            image:       '',
-            year:        String(new Date().getFullYear()),
-            score:        0,
-            public_score: null,
-            score_source: 'manual',
-            status:       null,
-            infos:       '',
-            category_id: null,
-            rating_id:   null,
+        const route = VueRouter.useRoute();
+        const search = ref(filters.keyword);
+        let t = null;
+        // Header search drives the home filters; from another page it navigates home.
+        watch(search, (q) => {
+            clearTimeout(t);
+            t = setTimeout(() => {
+                filters.keyword = q;
+                if (route.name !== 'home' && q.trim()) router.push({ path: '/', query: { q: q.trim() } });
+            }, 300);
         });
+        watch(() => filters.keyword, (k) => { if (k !== search.value) search.value = k; });
 
-        const searchActive = computed(() =>
-            searchQuery.value.trim() !== ''  ||
-            selectedGenres.value.length > 0  ||
-            selectedRatings.value.length > 0 ||
-            selectedStatuses.value.length > 0
-        );
-
-        const statusOptions = [
-            { value: 'Watched',        label: 'Watched' },
-            { value: 'Plan to Watch',  label: 'Plan to Watch' },
-            { value: 'Read',           label: 'Read' },
-            { value: 'Plan to Read',   label: 'Plan to Read' },
-            { value: 'null',           label: 'Not in List' },
-        ];
-
-        const ratingLabel = computed(() => {
-            if (!selectedRatings.value.length) return 'All Ratings';
-            if (selectedRatings.value.length === 1) {
-                const r = ratings.value.find(r => r.id === selectedRatings.value[0]);
-                return r ? r.label : '1 selected';
-            }
-            return selectedRatings.value.length + ' selected';
-        });
-
-        const categoryLabel = computed(() => {
-            if (!selectedGenres.value.length) return 'All Categories';
-            if (selectedGenres.value.length === 1) {
-                const c = categories.value.find(c => c.id === selectedGenres.value[0]);
-                return c ? c.name : '1 selected';
-            }
-            return selectedGenres.value.length + ' selected';
-        });
-
-        const statusLabel = computed(() => {
-            if (!selectedStatuses.value.length) return 'All Statuses';
-            if (selectedStatuses.value.length === 1) {
-                const s = statusOptions.find(s => s.value === selectedStatuses.value[0]);
-                return s ? s.label : '1 selected';
-            }
-            return selectedStatuses.value.length + ' selected';
-        });
-
-        let debounceTimer = null;
-
-        // ─── Media list ──────────────────────────────────────────────────────
-
-        const fetchMedia = async (page = 1) => {
-            loading.value    = true;
-            currentPage.value = typeof page === 'number' ? page : 1;
-
-            try {
-                const params = new URLSearchParams({
-                    page:     currentPage.value,
-                    limit:    pageSize.value,
-                    order_by: orderBy.value,
-                });
-
-                if (searchQuery.value)              params.append('keyword',      searchQuery.value);
-                if (selectedRatings.value.length)   params.append('rating_ids',   selectedRatings.value.join(','));
-                if (selectedGenres.value.length)    params.append('category_ids', selectedGenres.value.join(','));
-                if (selectedStatuses.value.length)  params.append('statuses',     selectedStatuses.value.join(','));
-
-                const response = await fetch('api.php?' + params.toString());
-                const result   = await response.json();
-
-                if (result.status === 'success') {
-                    items.value = result.data;
-                    if (result.pagination) {
-                        totalItems.value  = result.pagination.total;
-                        totalPages.value  = result.pagination.pages;
-                        currentPage.value = result.pagination.page;
-                    } else {
-                        totalItems.value = items.value.length;
-                        totalPages.value = 1;
-                    }
-                }
-            } catch (error) {
-                console.error('Error fetching media:', error);
-            } finally {
-                loading.value = false;
+        const onFormClose = (newId) => {
+            const wasAdd = modals.form && !modals.form.item;
+            modals.form = null;
+            if (wasAdd && newId) {
+                showToast('Added — open it?', { label: 'Open', run: () => router.push(mediaPath({ id: newId, title: '' })) }, 6000);
             }
         };
+        return { prefs, modals, ui, search, route, openForm, onFormClose, mediaVersion };
+    },
+    template: `
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header>
+        <div class="header-left">
+            <button v-if="route.name === 'home'" class="menu-btn" @click="ui.sidebarOpen = !ui.sidebarOpen" :aria-expanded="ui.sidebarOpen" aria-label="Filters">☰</button>
+            <router-link to="/" class="logo" aria-label="MMR home">MMR</router-link>
+            <nav class="main-nav" aria-label="Main">
+                <router-link to="/" exact-active-class="active"><Icon name="home" :size="16" /><span>Home</span></router-link>
+                <router-link to="/stats" active-class="active"><Icon name="chart" :size="16" /><span>Stats</span></router-link>
+                <router-link to="/diary" active-class="active"><Icon name="calendar" :size="16" /><span>Diary</span></router-link>
+                <router-link to="/lists" active-class="active"><Icon name="bookmark" :size="16" /><span>Lists</span></router-link>
+            </nav>
+        </div>
 
-        const changePage = (page) => {
-            if (page < 1 || page > totalPages.value) return;
-            fetchMedia(page);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        };
+        <div class="search-container">
+            <label for="global-search" class="sr-only">Search</label>
+            <input id="global-search" type="search" v-model="search" placeholder="Search anime or genre...">
+        </div>
 
-        const fetchRandomMedia = async () => {
-            loading.value = true;
-            try {
-                const response = await fetch('api.php?action=random&limit=20');
-                const result   = await response.json();
-                if (result.status === 'success') {
-                    items.value      = result.data;
-                    totalItems.value = result.data.length;
-                    totalPages.value = 1;
-                    currentPage.value = 1;
-                    // Clear filters so the random selection isn't confusing
-                    selectedGenres.value   = [];
-                    selectedStatuses.value = [];
-                    searchQuery.value      = '';
-                }
-            } catch (error) {
-                console.error('Error fetching random media:', error);
-            } finally {
-                loading.value = false;
-            }
-        };
+        <div class="user-actions">
+            <button class="btn-add-header" @click="openForm()" title="Add New Media">
+                <span class="btn-add-header-icon">+</span><span class="btn-add-header-label"> Add New Media</span>
+            </button>
+            <button class="theme-toggle" @click="modals.settings = true" title="Settings" aria-label="Settings"><Icon name="settings" :size="20" /></button>
+            <button class="theme-toggle" @click="prefs.dark = !prefs.dark" :title="prefs.dark ? 'Switch to light mode' : 'Switch to dark mode'" :aria-label="prefs.dark ? 'Switch to light mode' : 'Switch to dark mode'">
+                <svg v-if="prefs.dark" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="5" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+                </svg>
+                <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                </svg>
+            </button>
+        </div>
+    </header>
 
-        // ─── Filters & search ────────────────────────────────────────────────
+    <div id="main-content" class="app-body" tabindex="-1">
+        <router-view />
+    </div>
 
-        const fetchFilters = async () => {
-            try {
-                const [catRes, ratRes] = await Promise.all([
-                    fetch('api.php?action=categories'),
-                    fetch('api.php?action=ratings'),
-                ]);
-                const catData = await catRes.json();
-                const ratData = await ratRes.json();
-                if (catData.status === 'success') categories.value = catData.data;
-                if (ratData.status === 'success') ratings.value    = ratData.data;
-            } catch (error) {
-                console.error('Error fetching filters:', error);
-            }
-        };
+    <MediaFormModal v-if="modals.form" :item="modals.form.item" @close="onFormClose" />
+    <ImportExportModal v-if="modals.importExport" @close="modals.importExport = false" />
+    <PickOneModal v-if="modals.pickOne" @close="modals.pickOne = false" />
+    <SettingsModal v-if="modals.settings" @close="modals.settings = false" />
+    <AddToListModal v-if="ui.addToList" :items="ui.addToList" @close="ui.addToList = null" />
+    <ConfirmHost />
+    <ToastHost />`,
+};
 
-        const resetFilters = () => {
-            clearTimeout(debounceTimer); // Prevent stale debounced fetch after reset
-            selectedGenres.value   = [];
-            selectedStatuses.value = [];
-            selectedRatings.value  = [];
-            searchQuery.value      = '';
-            fetchMedia(1);
-        };
-
-        // Watchers automatically re-fetch when filter or sort selections change.
-        // The deep flag handles array mutations as well as full replacement.
-        watch([selectedRatings, selectedGenres, selectedStatuses, orderBy], () => {
-            fetchMedia(1);
-        }, { deep: true });
-
-        watch(searchQuery, () => {
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => fetchMedia(1), 500);
-        });
-
-        // ─── Status / score quick-updates ────────────────────────────────────
-
-        const isBookCategory = (item) =>
-            (item.categories || '').toLowerCase().includes('book');
-
-        const toggleWatchStatus = async (item) => {
-            const book       = isBookCategory(item);
-            const planStatus = book ? 'Plan to Read'  : 'Plan to Watch';
-            const doneStatus = book ? 'Read'          : 'Watched';
-            const isPlan     = (s) => s === 'Plan to Watch' || s === 'Plan to Read';
-
-            const next = !item.status ? planStatus : isPlan(item.status) ? doneStatus : null;
-
-            try {
-                const response = await fetch(`api.php?action=update_status&id=${item.id}`, {
-                    method:  'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body:    JSON.stringify({ status: next }),
-                });
-                const result = await response.json();
-                if (result.status === 'success') {
-                    item.status = next; // Optimistic local update
-                }
-            } catch (error) {
-                console.error('Error updating status:', error);
-            }
-        };
-
-        const updateScore = async (item) => {
-            try {
-                const response = await fetch(`api.php?action=update_score&id=${item.id}`, {
-                    method:  'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body:    JSON.stringify({ score: item.score }),
-                });
-                const result = await response.json();
-                if (result.status !== 'success') {
-                    console.error('Error updating score:', result.message);
-                }
-            } catch (error) {
-                console.error('Error updating score:', error);
-            }
-        };
-
-        // ─── Info modal ──────────────────────────────────────────────────────
-
-        const openInfoModal = async (item) => {
-            try {
-                const response = await fetch(`api.php?id=${item.id}`);
-                const result   = await response.json();
-                selectedMedia.value = result.status === 'success' ? result.data : { ...item };
-            } catch {
-                selectedMedia.value = { ...item };
-            }
-            showInfoModal.value = true;
-        };
-
-        const closeInfoModal = () => {
-            showInfoModal.value  = false;
-            selectedMedia.value  = null;
-        };
-
-        const saveInfos = async () => {
-            if (!selectedMedia.value) return;
-            isSavingInfo.value = true;
-            try {
-                const response = await fetch(`api.php?action=update_infos&id=${selectedMedia.value.id}`, {
-                    method:  'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body:    JSON.stringify({ infos: selectedMedia.value.infos }),
-                });
-                const result = await response.json();
-                if (result.status === 'success') {
-                    const index = items.value.findIndex(i => i.id === selectedMedia.value.id);
-                    if (index !== -1) {
-                        items.value[index].infos = selectedMedia.value.infos;
-                    }
-                    closeInfoModal();
-                } else {
-                    alert('Error saving notes: ' + result.message);
-                }
-            } catch (error) {
-                console.error('Error saving info:', error);
-                alert('An error occurred while saving notes.');
-            } finally {
-                isSavingInfo.value = false;
-            }
-        };
-
-        // ─── Add/Edit modal ──────────────────────────────────────────────────
-
-        const openMediaModal = async (item = null) => {
-            selectedFile.value  = null;
-            imagePreview.value  = item?.image ? 'medias/' + item.image : null;
-
-            if (item) {
-                try {
-                    const response = await fetch(`api.php?id=${item.id}`);
-                    const result   = await response.json();
-                    if (result.status === 'success') {
-                        const d = result.data;
-                        mediaForm.value = {
-                            id:          d.id,
-                            title:       d.title,
-                            image:       d.image,
-                            year:        d.year,
-                            score:       parseFloat(d.score)     || 0,
-                            public_score: d.public_score !== null && d.public_score !== undefined ? Number(d.public_score) : null,
-                            score_source: d.score_source || 'manual',
-                            status:      d.status,
-                            infos:       d.infos,
-                            category_id: d.category_id ? Number(d.category_id) : null,
-                            rating_id:   d.rating_id   ? Number(d.rating_id)   : null,
-                        };
-                    }
-                } catch (error) {
-                    console.error('Error fetching media details:', error);
-                    mediaForm.value = {
-                        ...item,
-                        category_id: item.category_id ? Number(item.category_id) : null,
-                        rating_id:   item.rating_id   ? Number(item.rating_id)   : null,
-                    };
-                }
-            } else {
-                mediaForm.value = {
-                    id:          null,
-                    title:       '',
-                    image:       '',
-                    year:        String(new Date().getFullYear()),
-                    score:        0,
-                    public_score: null,
-                    score_source: 'manual',
-                    status:       null,
-                    infos:       '',
-                    category_id: null,
-                    rating_id:   null,
-                };
-            }
-            showMediaModal.value = true;
-        };
-
-        const closeMediaModal = () => {
-            showMediaModal.value = false;
-        };
-
-        const handleFileUpload = (event) => {
-            const file = event.target.files[0];
-            if (!file) return;
-            selectedFile.value = file;
-            const reader = new FileReader();
-            reader.onload = (e) => { imagePreview.value = e.target.result; };
-            reader.readAsDataURL(file);
-        };
-
-        const saveMedia = async () => {
-            // Client-side validation
-            if (!mediaForm.value.title.trim()) {
-                alert('Title is required.');
-                return;
-            }
-
-            isSavingMedia.value = true;
-            try {
-                const isUpdate = !!mediaForm.value.id;
-                const url      = isUpdate ? `api.php?id=${mediaForm.value.id}` : 'api.php';
-
-                const formData = new FormData();
-                formData.append('title',        mediaForm.value.title.trim());
-                formData.append('year',         mediaForm.value.year);
-                formData.append('score',        mediaForm.value.score);
-                const ps = mediaForm.value.public_score;
-                formData.append('public_score', ps === null || ps === '' || Number(ps) <= 0 ? '' : ps);
-                formData.append('score_source', mediaForm.value.score_source || 'manual');
-                // Send empty string for null status; PHP converts it back to NULL
-                formData.append('status',       mediaForm.value.status ?? '');
-                formData.append('infos',        mediaForm.value.infos ?? '');
-                formData.append('category_ids', mediaForm.value.category_id ?? '');
-                formData.append('rating_ids',   mediaForm.value.rating_id   ?? '');
-
-                if (selectedFile.value) {
-                    formData.append('image_file', selectedFile.value);
-                } else {
-                    formData.append('image', mediaForm.value.image ?? '');
-                }
-
-                const response = await fetch(url, { method: 'POST', body: formData });
-                const result   = await response.json();
-
-                if (result.status === 'success') {
-                    closeMediaModal();
-                    fetchMedia(isUpdate ? currentPage.value : 1);
-                } else {
-                    alert('Error: ' + result.message);
-                }
-            } catch (error) {
-                console.error('Error saving media:', error);
-                alert('An error occurred while saving.');
-            } finally {
-                isSavingMedia.value = false;
-            }
-        };
-
-        // ─── Delete ──────────────────────────────────────────────────────────
-
-        // Generic confirmation dialog: { title, message, confirmLabel, danger, onConfirm }
-        const confirmDialog    = ref(null);
-        const confirmBusy      = ref(false);
-        const confirmCancelBtn = ref(null);
-
-        const openConfirm = (options) => {
-            confirmDialog.value = options;
-            nextTick(() => confirmCancelBtn.value?.focus()); // safe default focus
-        };
-        const closeConfirm = () => {
-            if (!confirmBusy.value) confirmDialog.value = null;
-        };
-        const runConfirm = async () => {
-            if (!confirmDialog.value) return;
-            confirmBusy.value = true;
-            try {
-                await confirmDialog.value.onConfirm();
-            } finally {
-                confirmBusy.value  = false;
-                confirmDialog.value = null;
-            }
-        };
-
-        // Toast with optional action (Undo)
-        const toast = ref(null);
-        let toastTimer = null;
-        const showToast = (message, action = null, duration = 8000) => {
-            clearTimeout(toastTimer);
-            toast.value = { message, action, duration };
-            toastTimer  = setTimeout(() => { toast.value = null; }, duration);
-        };
-        // Hovering or focusing the toast pauses auto-dismiss so Undo stays reachable.
-        const pauseToast  = () => clearTimeout(toastTimer);
-        const resumeToast = () => {
-            if (!toast.value) return;
-            clearTimeout(toastTimer);
-            toastTimer = setTimeout(() => { toast.value = null; }, 3000);
-        };
-        const dismissToast = () => {
-            clearTimeout(toastTimer);
-            toast.value = null;
-        };
-        const runToastAction = async () => {
-            const action = toast.value?.action;
-            dismissToast();
-            if (action) await action.run();
-        };
-
-        // Re-fetch the current page; step back if it became empty (e.g. last item of last page deleted).
-        const refreshCurrentPage = async () => {
-            await fetchMedia(currentPage.value);
-            if (items.value.length === 0 && currentPage.value > 1) {
-                await fetchMedia(Math.max(1, totalPages.value));
-            }
-        };
-
-        const restoreMedia = async (item) => {
-            try {
-                const response = await fetch(`api.php?action=restore&id=${item.id}`, { method: 'POST' });
-                const result   = await response.json();
-                if (result.status === 'success') {
-                    showToast(`Restored "${item.title}"`, null, 3000);
-                    refreshCurrentPage();
-                } else {
-                    showToast('Could not restore: ' + result.message);
-                }
-            } catch (error) {
-                console.error('Error restoring media:', error);
-                showToast('Could not restore — network error.');
-            }
-        };
-
-        const deleteMedia = (item) => {
-            openConfirm({
-                title:        'Delete media?',
-                message:      `"${item.title}" will be removed from your list. You can undo this right after.`,
-                confirmLabel: 'Delete',
-                danger:       true,
-                onConfirm: async () => {
-                    try {
-                        const response = await fetch(`api.php?id=${item.id}`, { method: 'DELETE' });
-                        const result   = await response.json();
-                        if (result.status === 'success') {
-                            items.value = items.value.filter(i => i.id !== item.id);
-                            totalItems.value = Math.max(0, totalItems.value - 1);
-                            showToast(`Deleted "${item.title}"`, { label: 'Undo', run: () => restoreMedia(item) });
-                            refreshCurrentPage();
-                        } else {
-                            showToast('Error: ' + result.message);
-                        }
-                    } catch (error) {
-                        console.error('Error deleting media:', error);
-                        showToast('Could not delete — network error.');
-                    }
-                },
-            });
-        };
-
-        const onKeydown = (e) => {
-            if (e.key === 'Escape' && confirmDialog.value) closeConfirm();
-        };
-
-        // Category-aware status labels for the Add/Edit modal
-        const isBookFormCategory = computed(() => {
-            const cat = categories.value.find(c => c.id === mediaForm.value.category_id);
-            return cat ? cat.name.toLowerCase().includes('book') : false;
-        });
-
-        // ─── Theme ───────────────────────────────────────────────────────────
-
-        const applyTheme = () => {
-            document.documentElement.classList.toggle('dark-theme', isDarkMode.value);
-        };
-
-        const toggleTheme = () => {
-            isDarkMode.value = !isDarkMode.value;
-            localStorage.setItem('theme', isDarkMode.value ? 'dark' : 'light');
-            applyTheme();
-        };
-
-        const toggleSidebar = () => {
-            isSidebarOpen.value = !isSidebarOpen.value;
-        };
-
-        // ─── Init ────────────────────────────────────────────────────────────
-
-        onMounted(() => {
-            window.addEventListener('keydown', onKeydown);
-            applyTheme();
-            fetchMedia();
-            fetchFilters();
-        });
-
-        onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
-
-        // ─── Expose to template ──────────────────────────────────────────────
-
-        return {
-            // List state
-            items, loading, currentPage, pageSize, totalItems, totalPages,
-            // Filters & search
-            categories, ratings, searchQuery, selectedGenres, selectedStatuses, selectedRatings,
-            orderBy, searchActive, statusOptions,
-            ratingLabel, categoryLabel, statusLabel, openFilterGroup, toggleFilterGroup,
-            isHentai, isImageHidden, toggleReveal,
-            // Pagination
-            changePage, pages,
-            // Formatting
-            formatPublicScore, publicScoreTitle, categoryName, scoreSources: SCORE_SOURCES,
-            // Confirm dialog & toast
-            confirmDialog, confirmBusy, confirmCancelBtn, closeConfirm, runConfirm,
-            toast, dismissToast, runToastAction, pauseToast, resumeToast,
-            // Actions
-            fetchMedia, fetchRandomMedia, resetFilters,
-            toggleWatchStatus, updateScore, deleteMedia,
-            // Info modal
-            showInfoModal, selectedMedia, isSavingInfo,
-            openInfoModal, closeInfoModal, saveInfos,
-            // Add/Edit modal
-            showMediaModal, mediaForm, isSavingMedia, imagePreview, isBookFormCategory,
-            openMediaModal, closeMediaModal, handleFileUpload, saveMedia,
-            // UI
-            isSidebarOpen, isDarkMode, toggleSidebar, toggleTheme,
-        };
-    }
-}).mount('#app');
+const app = createApp(App);
+app.use(router);
+app.config.errorHandler = (err) => {
+    console.error(err);
+    showToast('Something went wrong: ' + (err?.message || err));
+};
+loadLookups().catch((e) => showToast('Could not load filters: ' + e.message));
+app.mount('#app');

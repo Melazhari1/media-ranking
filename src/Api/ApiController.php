@@ -45,6 +45,10 @@ final class ApiController
             $route === 'GET recommendations'  => $this->ok($this->reco()->becauseYouLiked((int) ($query['rows'] ?? 2), (int) ($query['limit'] ?? 12))),
             $route === 'GET home_rows'        => $this->homeRows(),
             $route === 'GET export'           => $this->export($query),
+            $route === 'GET lists'            => $this->ok($this->s->lists()->all()),
+            $route === 'GET tags'             => $this->ok($this->s->tags()->search((string) ($query['q'] ?? ''), (int) ($query['limit'] ?? 20))),
+            $route === 'GET diary'            => $this->ok($this->media->diary(($query['year'] ?? 'all') === 'all' ? 'all' : (int) $query['year'])),
+            $route === 'GET settings'         => $this->ok($this->s->settings()->all()),
             $route === 'GET ' && $id !== null   => $this->getOne($id),
             $route === 'GET '                 => $this->listPage($query),
 
@@ -56,6 +60,17 @@ final class ApiController
             $route === 'POST progress'        => $this->write(fn () => $this->progress($this->requireId($id), $body)),
             $route === 'POST complete'        => $this->write(fn () => $this->complete($this->requireId($id), $body)),
             $route === 'POST restore'         => $this->write(fn () => $this->restore($this->requireId($id))),
+            $route === 'POST log_rewatch'     => $this->write(fn () => $this->logRewatch($this->requireId($id), $body)),
+            $route === 'POST media_tags'      => $this->write(fn () => $this->mediaTags($this->requireId($id), $body)),
+            $route === 'POST batch'           => $this->write(fn () => $this->batch($body)),
+            $route === 'POST list_create'     => $this->write(fn () => $this->ok($this->s->lists()->create((string) ($body['name'] ?? ''), $body['description'] ?? null, !empty($body['is_public'])))),
+            $route === 'POST list_update'     => $this->write(fn () => $this->ok($this->found($this->s->lists()->update($this->requireId($id), $body), 'List not found'))),
+            $route === 'POST list_delete'     => $this->write(fn () => $this->ok($this->found($this->s->lists()->delete($this->requireId($id)), 'List not found'))),
+            $route === 'POST list_reorder'    => $this->write(fn () => $this->listReorder($body)),
+            $route === 'POST list_add_items'  => $this->write(fn () => $this->listAddItems($this->requireId($id), $body)),
+            $route === 'POST list_remove_item' => $this->write(fn () => $this->listRemoveItem($this->requireId($id), $body)),
+            $route === 'POST list_reorder_items' => $this->write(fn () => $this->listReorderItems($this->requireId($id), $body)),
+            $route === 'POST settings_save'   => $this->ok($this->s->settings()->save($body)),
             $route === 'POST import_preview'  => $this->importPreview($files, $body),
             $route === 'POST import_commit'   => $this->write(fn () => $this->importCommit($body)),
             $route === 'POST '                => $this->write(fn () => $this->save($id, $body, $files)),
@@ -189,7 +204,7 @@ final class ApiController
         $cards = fn (array $rows) => $rows;
         return $this->ok([
             'continue'   => $cards($this->media->search(['in_progress' => true], 20, 0, 'm.created_at DESC')),
-            'recent'     => $cards($this->media->search(['statuses' => MediaStatus::values()], 20, 0, 'm.created_at DESC')),
+            'recent'     => $cards($this->media->search([], 20, 0, 'm.created_at DESC')),
             'top_rated'  => $cards(array_values(array_filter(
                 $this->media->search(['statuses' => MediaStatus::values()], 20, 0, 'm.score DESC'),
                 fn ($r) => (float) $r['score'] > 0
@@ -261,6 +276,81 @@ final class ApiController
     private function complete(int $id, array $b): array
     {
         return $this->ok($this->found($this->media->completeMedia($id, $b['finished_at'] ?? null)));
+    }
+
+    private function logRewatch(int $id, array $b): array
+    {
+        $this->found($this->media->logRewatch($id, $b['started_at'] ?? null, $b['finished_at'] ?? null, $b['notes'] ?? null));
+        return $this->ok($this->media->getMediaById($id));
+    }
+
+    private function mediaTags(int $id, array $b): array
+    {
+        $this->found($this->media->getMediaById($id));
+        $tags = $b['tags'] ?? [];
+        if (!is_array($tags)) {
+            throw new HttpError(400, 'tags must be an array of names');
+        }
+        return $this->ok($this->s->tags()->setForMedia($id, $tags));
+    }
+
+    /** Single batch endpoint for bulk actions. */
+    private function batch(array $b): array
+    {
+        $ids = array_values(array_filter(array_map('intval', (array) ($b['ids'] ?? []))));
+        $op = (string) ($b['op'] ?? '');
+        $value = $b['value'] ?? null;
+        if (!$ids) {
+            throw new HttpError(400, 'No items selected');
+        }
+        if (count($ids) > 1000) {
+            throw new HttpError(400, 'At most 1000 items per batch');
+        }
+        switch ($op) {
+            case 'add_to_list':
+                $this->found($this->s->lists()->find((int) $value), 'List not found');
+                $affected = $this->s->lists()->addItems((int) $value, $ids);
+                break;
+            case 'add_tags':
+                if (!is_array($value) || !$value) {
+                    throw new HttpError(400, 'value must be a non-empty array of tag names');
+                }
+                $this->s->tags()->addToMedia($ids, $value);
+                $affected = count($ids);
+                break;
+            default:
+                $affected = $this->media->batch($ids, $op, $value);
+        }
+        return $this->ok(['op' => $op, 'affected' => $affected]);
+    }
+
+    private function listReorder(array $b): array
+    {
+        $this->s->lists()->reorder(array_map('intval', (array) ($b['ids'] ?? [])));
+        return $this->ok($this->s->lists()->all());
+    }
+
+    private function listAddItems(int $listId, array $b): array
+    {
+        $this->found($this->s->lists()->find($listId), 'List not found');
+        $ids = array_values(array_filter(array_map('intval', (array) ($b['media_ids'] ?? []))));
+        if (!$ids) {
+            throw new HttpError(400, 'media_ids is required');
+        }
+        return $this->ok(['added' => $this->s->lists()->addItems($listId, $ids)]);
+    }
+
+    private function listRemoveItem(int $listId, array $b): array
+    {
+        $this->s->lists()->removeItem($listId, (int) ($b['media_id'] ?? 0));
+        return $this->ok(true);
+    }
+
+    private function listReorderItems(int $listId, array $b): array
+    {
+        $this->found($this->s->lists()->find($listId), 'List not found');
+        $this->s->lists()->reorderItems($listId, array_map('intval', (array) ($b['media_ids'] ?? [])));
+        return $this->ok(true);
     }
 
     private function restore(int $id): array

@@ -466,6 +466,103 @@ class MediaManager
         $this->pdo->prepare("UPDATE media SET $cols WHERE id = :id")->execute($set + ['id' => $id]);
     }
 
+    /**
+     * Apply one operation to many items in a single transaction.
+     * ops: set_status (value: status|null, wording adapted per item category), set_category, set_rating,
+     *      delete (soft), restore. List/tag operations are handled by their repositories.
+     *
+     * @return int affected rows
+     */
+    public function batch(array $ids, string $op, $value = null): int
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+        if (!$ids) {
+            throw new InvalidArgumentException('No items selected');
+        }
+        if (count($ids) > 1000) {
+            throw new InvalidArgumentException('At most 1000 items per batch');
+        }
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+
+        $this->pdo->beginTransaction();
+        try {
+            switch ($op) {
+                case 'set_status':
+                    $status = MediaStatus::fromInput($value);
+                    $affected = 0;
+                    $stmt = $this->pdo->prepare("SELECT m.id, c.name FROM media m LEFT JOIN categories c ON c.id = m.category_id WHERE m.id IN ($ph) AND m.deleted_at IS NULL");
+                    $stmt->execute($ids);
+                    $update = $this->pdo->prepare('UPDATE media SET status = ? WHERE id = ?');
+                    foreach ($stmt->fetchAll(PDO::FETCH_KEY_PAIR) as $id => $category) {
+                        $update->execute([$status?->forCategory($category)->value, $id]);
+                        $affected++;
+                    }
+                    break;
+                case 'set_category':
+                case 'set_rating':
+                    $table = $op === 'set_category' ? 'categories' : 'ratings';
+                    $col = $op === 'set_category' ? 'category_id' : 'rating_id';
+                    $check = $this->pdo->prepare("SELECT COUNT(*) FROM $table WHERE id = ?");
+                    $check->execute([(int) $value]);
+                    if (!$check->fetchColumn()) {
+                        throw new InvalidArgumentException("Unknown $col");
+                    }
+                    $stmt = $this->pdo->prepare("UPDATE media SET $col = ? WHERE id IN ($ph) AND deleted_at IS NULL");
+                    $stmt->execute(array_merge([(int) $value], $ids));
+                    $affected = count($ids);
+                    break;
+                case 'delete':
+                    $stmt = $this->pdo->prepare("UPDATE media SET deleted_at = NOW() WHERE id IN ($ph) AND deleted_at IS NULL");
+                    $stmt->execute($ids);
+                    $affected = $stmt->rowCount();
+                    break;
+                case 'restore':
+                    $stmt = $this->pdo->prepare("UPDATE media SET deleted_at = NULL WHERE id IN ($ph) AND deleted_at IS NOT NULL");
+                    $stmt->execute($ids);
+                    $affected = $stmt->rowCount();
+                    break;
+                default:
+                    throw new InvalidArgumentException("Unknown batch operation '$op'");
+            }
+            $this->pdo->commit();
+            return $affected;
+        } catch (\Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Diary entries: finished items + logged rewatches, newest first.
+     * @param int|string $year a year or 'all'
+     * @return array{entries: array, years: int[]}
+     */
+    public function diary($year): array
+    {
+        $yearCond = $year === 'all' ? '' : ' AND YEAR(%s) = ' . (int) $year;
+        $finished = $this->pdo->query(
+            "SELECT 'finish' AS kind, m.id AS entry_id, m.finished_at AS entry_date, NULL AS notes, " . self::SELECT_COLUMNS . ' ' . self::FROM . "
+             WHERE m.deleted_at IS NULL AND m.finished_at IS NOT NULL" . sprintf($yearCond, 'm.finished_at')
+        )->fetchAll();
+        $rewatches = $this->pdo->query(
+            "SELECT 'rewatch' AS kind, rl.id AS entry_id, rl.finished_at AS entry_date, rl.notes AS notes, " . self::SELECT_COLUMNS . "
+             FROM rewatch_log rl JOIN media m ON m.id = rl.media_id
+             LEFT JOIN categories c ON m.category_id = c.id LEFT JOIN ratings r ON m.rating_id = r.id
+             WHERE m.deleted_at IS NULL AND rl.finished_at IS NOT NULL" . sprintf($yearCond, 'rl.finished_at')
+        )->fetchAll();
+        // entry_date is the entry's own date (SELECT_COLUMNS also carries the item's finished_at).
+        $entries = array_merge($finished, $rewatches);
+        usort($entries, fn ($a, $b) => [$b['entry_date'], $b['entry_id']] <=> [$a['entry_date'], $a['entry_id']]);
+
+        $years = $this->pdo->query(
+            'SELECT DISTINCT y FROM (
+                SELECT YEAR(finished_at) y FROM media WHERE deleted_at IS NULL AND finished_at IS NOT NULL
+                UNION SELECT YEAR(rl.finished_at) FROM rewatch_log rl JOIN media m ON m.id = rl.media_id WHERE m.deleted_at IS NULL AND rl.finished_at IS NOT NULL
+             ) t ORDER BY y DESC'
+        )->fetchAll(PDO::FETCH_COLUMN);
+        return ['entries' => $entries, 'years' => array_map('intval', $years)];
+    }
+
     /** Lightweight rows for duplicate detection (importers). */
     public function matchIndexRows(): array
     {

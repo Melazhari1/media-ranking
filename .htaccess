@@ -1,0 +1,26 @@
+# MMR — Apache config. Merge your production auth lines (see README "Public profile") into this file.
+DirectoryIndex index.php
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Never serve internals
+    RewriteRule ^(src|vendor|var|migrations|tests|bin|node_modules)(/|$) - [F,L]
+    RewriteRule ^(composer\.(json|lock)|package(-lock)?\.json|phpunit\.xml\.dist|eslint\.config\.mjs|config\.php|bootstrap\.php|Database\.php|MediaManager\.php|import_anime\.php|add_status_column\.php|README\.md|top_anime\.ndjson|\.env.*)$ - [F,L]
+
+    # Public profile (opt-in) and its Open Graph image
+    RewriteRule ^u/([A-Za-z0-9_-]{3,30})/og\.png$ og.php?u=$1 [L,QSA]
+    RewriteRule ^u/([A-Za-z0-9_-]{3,30})/?$ public.php?u=$1 [L,QSA]
+
+    # Client-side routes (/media/12-slug, /stats, /diary, /lists) → app shell
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-Frame-Options "SAMEORIGIN"
+</IfModule>
