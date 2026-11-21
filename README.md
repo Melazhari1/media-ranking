@@ -35,6 +35,25 @@ Every schema change is a reversible migration in `migrations/`.
 | Version | Change | Rollback notes |
 |---|---|---|
 | `Version20261121000001` | `media.sort_title`, `public_score`, `score_source`, `deleted_at` (+ indexes) | Lossless for titles/scores (`score_mal` is kept in sync). Soft-deleted items reappear. |
+| `Version20261121000002` | Progress (`progress_current/total/unit`), `started_at`, `finished_at`, `rewatch_count`; `rewatch_log` table | Drops tracking data entered since |
+| `Version20261121000003` | `release_year` (generated from `year`), `external_source/id`, `synopsis`, `backdrop_url`, `last_synced_at`; `genres`, `media_genre` | Drops fetched metadata/genres |
+| `Version20261121000004` | `tags`, `media_tag` | Drops tags |
+| `Version20261121000005` | `user_lists`, `user_list_media` (ordered) | Drops lists |
+| `Version20261121000006` | Indexes on `status`, `category_id`, `rating_id`, `created_at` | Indexes only |
+
+Join tables cascade on a **hard** delete of a media row (`app:purge-deleted`); a soft delete keeps
+them, so Undo restores tags/lists/genres too.
+
+### Statuses
+
+`media.status` stays a `VARCHAR(20)` holding display values; the allowed set lives in
+`App\Domain\MediaStatus`: `Plan to Watch`, `Plan to Read`, `Watching`, `Reading`, `Watched`, `Read`,
+`On Hold`, `Dropped`, `Rewatching` (NULL or `''` = not in list). Unknown values are rejected with HTTP 400.
+Before deploying, check production has no other values:
+
+```sql
+SELECT status, COUNT(*) FROM media GROUP BY status;
+```
 
 ## Console commands
 
@@ -97,8 +116,12 @@ php bin/console app:purge-deleted --older-than=30       # asks for confirmation 
 | `POST api.php[?id=N]` with `public_score`, `score_source` (`mal`/`tmdb`/`imdb`/`manual`) | Empty or 0 → no score. Legacy `score_mal` still accepted (as MAL) |
 | `DELETE api.php?id=N` | Soft delete; 404 if not found |
 | `POST api.php?action=restore&id=N` | Undo a delete |
+| `GET api.php?action=statuses` | Allowed status values |
+| `POST api.php?action=update_tracking&id=N` | JSON with any of `progress_current`, `progress_total`, `progress_unit` (`episode`/`chapter`/`volume`/`page`), `started_at`, `finished_at` (`YYYY-MM-DD`), `rewatch_count`. Partial; validated (400 on error). Returns the updated row |
+| `GET api.php?order_by=m.year ASC\|DESC` | Now numeric via `release_year`; unknown years (`N/A`) last |
+| any write with an unknown `status` | 400 |
 
-Responses now include `public_score`, `score_source`, `sort_title`, `created_at` (`score_mal` is no longer returned).
+Responses now include `public_score`, `score_source`, `sort_title`, `created_at`, `release_year`, the progress/date fields and external metadata; `GET ?id=N` also returns `synopsis` (`score_mal` is no longer returned).
 
 ## Tests & lint
 

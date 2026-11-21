@@ -108,6 +108,42 @@ final class ApiTest extends DatabaseTestCase
         self::assertSame(404, $code);
     }
 
+    public function testUpdateTracking(): void
+    {
+        $id = $this->insertRaw(['title' => 'Tracked', 'status' => 'Watching']);
+
+        [$code, $res] = $this->request('POST', "?action=update_tracking&id=$id", ['progress_current' => 7, 'progress_total' => 24, 'progress_unit' => 'episode']);
+        self::assertSame(200, $code);
+        self::assertSame(7, (int) $res['data']['progress_current']);
+        self::assertSame('episode', $res['data']['progress_unit']);
+
+        [$code, $res] = $this->request('POST', "?action=update_tracking&id=$id", ['progress_current' => 30]);
+        self::assertSame(400, $code);
+        self::assertStringContainsString('exceed', $res['message']);
+
+        [$code] = $this->request('POST', '?action=update_tracking&id=999999', ['progress_current' => 1]);
+        self::assertSame(404, $code);
+    }
+
+    public function testUnknownStatusIs400NotSaved(): void
+    {
+        $id = $this->insertRaw(['title' => 'Strict']);
+        [$code] = $this->request('POST', "?action=update_status&id=$id", ['status' => 'Binge']);
+        self::assertSame(400, $code);
+        self::assertNull($this->fetchRow($id)['status']);
+
+        [$code] = $this->request('POST', "?action=update_status&id=$id", ['status' => 'On Hold']);
+        self::assertSame(200, $code);
+        self::assertSame('On Hold', $this->fetchRow($id)['status']);
+    }
+
+    public function testStatusesEndpoint(): void
+    {
+        [, $res] = $this->request('GET', '?action=statuses');
+        self::assertContains('Rewatching', $res['data']);
+        self::assertContains('Plan to Watch', $res['data']);
+    }
+
     public function testUnknownFilterAndPublicScoreSort(): void
     {
         $this->insertRaw(['title' => 'Uncategorized', 'category_id' => null, 'score_mal' => 3]);

@@ -1,5 +1,7 @@
 <?php
 
+use App\Domain\MediaStatus;
+use App\Domain\ProgressUnit;
 use App\Text\TitleNormalizer;
 
 class MediaManager
@@ -13,11 +15,17 @@ class MediaManager
     private const PUBLIC_SCORE_EXPR = 'COALESCE(m.public_score, NULLIF(ROUND(m.score_mal, 2), 0))';
     private const SCORE_SOURCE_EXPR = "COALESCE(m.score_source, IF(m.score_mal > 0, 'mal', NULL))";
 
-    private const SELECT_COLUMNS = "m.id, m.title, m.sort_title, m.image, m.year, m.score,
+    private const SELECT_COLUMNS = "m.id, m.title, m.sort_title, m.image, m.year, m.release_year, m.score,
                     " . self::PUBLIC_SCORE_EXPR . " AS public_score,
                     " . self::SCORE_SOURCE_EXPR . " AS score_source,
-                    m.status, m.infos, m.category_id, m.rating_id, m.created_at,
+                    m.status, m.progress_current, m.progress_total, m.progress_unit,
+                    m.started_at, m.finished_at, m.rewatch_count,
+                    m.external_source, m.external_id, m.backdrop_url, m.last_synced_at,
+                    m.infos, m.category_id, m.rating_id, m.created_at,
                     c.name AS categories, r.name AS ratings, r.label AS rating_label";
+
+    /** Fields editable through updateTracking(). */
+    public const TRACKING_FIELDS = ['progress_current', 'progress_total', 'progress_unit', 'started_at', 'finished_at', 'rewatch_count'];
 
     private const FROM = "FROM media m
              LEFT JOIN categories c ON m.category_id = c.id
@@ -35,8 +43,9 @@ class MediaManager
         'm.public_score ASC'  => '(' . self::PUBLIC_SCORE_EXPR . ' IS NULL), ' . self::PUBLIC_SCORE_EXPR . ' ASC',
         'm.score_mal DESC'    => self::PUBLIC_SCORE_EXPR . ' DESC',
         'm.score_mal ASC'     => '(' . self::PUBLIC_SCORE_EXPR . ' IS NULL), ' . self::PUBLIC_SCORE_EXPR . ' ASC',
-        'm.year DESC'         => 'm.year DESC',
-        'm.year ASC'          => 'm.year ASC',
+        // release_year is numeric (generated from `year`); "N/A" years go last both ways.
+        'm.year DESC'         => 'm.release_year DESC, m.year DESC',
+        'm.year ASC'          => '(m.release_year IS NULL), m.release_year ASC, m.year ASC',
     ];
 
     private PDO $pdo;
@@ -80,7 +89,7 @@ class MediaManager
     public function getMediaById($id)
     {
         $stmt = $this->pdo->prepare(
-            "SELECT " . self::SELECT_COLUMNS . " " . self::FROM . " WHERE m.id = ? AND m.deleted_at IS NULL"
+            "SELECT " . self::SELECT_COLUMNS . ", m.synopsis " . self::FROM . " WHERE m.id = ? AND m.deleted_at IS NULL"
         );
         $stmt->execute([$id]);
         return $stmt->fetch();
@@ -214,6 +223,49 @@ class MediaManager
         return $stmt->execute(['id' => $id, 'score' => (float) $score]);
     }
 
+    /**
+     * Partial update of progress / dates / rewatch count. Only keys present in $fields change.
+     * Validates the merged result (e.g. progress_current ≤ progress_total, finished ≥ started).
+     *
+     * @throws InvalidArgumentException on invalid input
+     * @return array|false the updated media row, or false if not found
+     */
+    public function updateTracking($id, array $fields)
+    {
+        $current = $this->getMediaById($id);
+        if (!$current) {
+            return false;
+        }
+
+        $changes = [];
+        foreach (array_intersect_key($fields, array_flip(self::TRACKING_FIELDS)) as $key => $value) {
+            $changes[$key] = match ($key) {
+                'progress_current', 'progress_total' => self::nullableCount($key, $value),
+                'rewatch_count'                      => self::nullableCount($key, $value) ?? 0,
+                'progress_unit'                      => ProgressUnit::fromInput($value)?->value,
+                'started_at', 'finished_at'          => self::nullableDate($key, $value),
+            };
+        }
+        if (!$changes) {
+            return $current;
+        }
+
+        $merged = $changes + $current;
+        if ($merged['progress_current'] !== null && $merged['progress_total'] !== null
+            && (int) $merged['progress_current'] > (int) $merged['progress_total']) {
+            throw new InvalidArgumentException('progress_current cannot exceed progress_total');
+        }
+        if ($merged['started_at'] && $merged['finished_at'] && $merged['finished_at'] < $merged['started_at']) {
+            throw new InvalidArgumentException('finished_at cannot be before started_at');
+        }
+
+        $set = implode(', ', array_map(fn ($k) => "$k = :$k", array_keys($changes)));
+        $stmt = $this->pdo->prepare("UPDATE media SET $set WHERE id = :id");
+        $stmt->execute($changes + ['id' => $id]);
+
+        return $this->getMediaById($id);
+    }
+
     // ─── Delete (soft) ────────────────────────────────────────────────────────
 
     /** Soft delete: the row is hidden everywhere and can be restored; app:purge-deleted removes it for good. */
@@ -254,9 +306,33 @@ class MediaManager
         return in_array($source, self::SCORE_SOURCES, true) ? $source : 'manual';
     }
 
+    /** @throws InvalidArgumentException for values outside MediaStatus */
     private function sanitizeStatus($status)
     {
-        return ($status === '' || $status === 'null' || $status === null) ? null : $status;
+        return MediaStatus::fromInput($status)?->value;
+    }
+
+    private static function nullableCount(string $field, $value): ?int
+    {
+        if ($value === null || $value === '' || $value === 'null') {
+            return null;
+        }
+        if (filter_var($value, FILTER_VALIDATE_INT) === false || (int) $value < 0 || (int) $value > 100000) {
+            throw new InvalidArgumentException("$field must be a whole number between 0 and 100000");
+        }
+        return (int) $value;
+    }
+
+    private static function nullableDate(string $field, $value): ?string
+    {
+        if ($value === null || $value === '' || $value === 'null') {
+            return null;
+        }
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d', (string) $value);
+        if (!$d || $d->format('Y-m-d') !== $value) {
+            throw new InvalidArgumentException("$field must be a date in YYYY-MM-DD format");
+        }
+        return $value;
     }
 
     private function unknownCategoryIds(): array

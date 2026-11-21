@@ -26,6 +26,10 @@ try {
             http_response_code(405);
             echo json_encode(["status" => "error", "message" => "Method not allowed"]);
     }
+} catch (InvalidArgumentException $e) {
+    // Validation errors (unknown status, bad date, …)
+    http_response_code(400);
+    echo json_encode(["status" => "error", "message" => $e->getMessage()]);
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode(["status" => "error", "message" => $e->getMessage()]);
@@ -42,6 +46,11 @@ function handleGet($manager, $action, $id)
 
     if ($action === 'ratings') {
         echo json_encode(["status" => "success", "data" => $manager->getRatings()]);
+        return;
+    }
+
+    if ($action === 'statuses') {
+        echo json_encode(["status" => "success", "data" => \App\Domain\MediaStatus::values()]);
         return;
     }
 
@@ -115,6 +124,23 @@ function handlePost($manager, $action, $id)
         }
         $manager->updateScore($id, $data['score']);
         echo json_encode(["status" => "success", "message" => "Score updated"]);
+        return;
+    }
+
+    // Partial update of progress / dates / rewatch count (JSON body with any of the fields).
+    if ($action === 'update_tracking') {
+        if ($id === null) {
+            http_response_code(400);
+            echo json_encode(["status" => "error", "message" => "ID is required"]);
+            return;
+        }
+        $item = $manager->updateTracking($id, is_array($data) ? $data : []);
+        if (!$item) {
+            http_response_code(404);
+            echo json_encode(["status" => "error", "message" => "Media not found"]);
+            return;
+        }
+        echo json_encode(["status" => "success", "data" => $item]);
         return;
     }
 
